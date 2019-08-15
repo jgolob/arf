@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Filter csv by tax_id validity
+output all valid tax_ids in database
 """
 
 import argparse
-import csv
+import configparser
+import pandas
 import sqlalchemy
-import sys
 
 
 def main():
@@ -14,35 +14,25 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
-        'csv',
-        type=argparse.FileType('r'),
-        help='file csv with column tax_id')
+        'feather', help='full seq_info file with description column')
     p.add_argument(
         'url',
         help='Database string URI or filename.')
-    db_parser = p.add_argument_group(title='database options')
-    db_parser.add_argument(
-        '--schema',
-        type=lambda x: x + '.',
-        default='',
-        help=('Name of SQL schema in database to query '
-              '(if database flavor supports this).'))
-    p.add_argument(
-        '--out',
-        default=sys.stdout,
-        type=argparse.FileType('w'),
-        help='list of all version downloaded')
-
     args = p.parse_args()
-    cur = sqlalchemy.create_engine(args.url).raw_connection().cursor()
-    cur.execute('select tax_id, is_valid from ' + args.schema + 'nodes')
-    is_valid = dict(cur.fetchall())
-    reader = csv.reader(args.csv, delimiter=',', quotechar='"')
-    header = next(reader)
-    tax_id = header.index('tax_id')
-    writer = csv.writer(args.out)
-    writer.writerow(header)
-    writer.writerows(r for r in reader if is_valid[r[tax_id]])
+    info = pandas.read_feather(args.feather)
+    conf = configparser.SafeConfigParser(allow_no_value=True)
+    conf.optionxform = str  # options are case-sensitive
+    conf.read(args.url)
+    url = conf.get('sqlalchemy', 'url')
+    engine = sqlalchemy.create_engine(url)
+    conn = engine.connect()
+    meta = sqlalchemy.MetaData(engine, reflect=True)
+    nodes = meta.tables['nodes']
+    s = sqlalchemy.select([nodes.c.tax_id]).where(nodes.c.is_valid)
+    named = set(i[0] for i in conn.execute(s))
+    info['is_valid'] = False
+    info.loc[info['tax_id'].isin(named), 'is_valid'] = True
+    info.to_feather(args.feather)
 
 
 if __name__ == '__main__':

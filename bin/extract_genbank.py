@@ -23,8 +23,14 @@ REFERENCE_COLS = ['pubmed_id', 'title', 'authors',
 
 REFSEQ_INFO_COLS = ['seqname', 'accession', 'gi', 'seq_start', 'seq_stop']
 
-REFSEQ_SOURCE = re.compile('(?P<accession>[A-Z]{1,4}\d{5,8})'
-                           ':?(?P<seq_start>\d+)?-?(?P<seq_stop>\d+)?')
+# https://www.ncbi.nlm.nih.gov/Sequin/acc.html
+REFSEQ = '[A-Z]{2}_\w+'
+ACCESSION = '[A-Z]+\d+'
+COORDINATES = ':(?P<seq_start>\d+)-(?P<seq_stop>\d+)'
+REFSEQ_SOURCE = re.compile(
+    'REFSEQ.*?(?P<accession>{REFSEQ}|{ACCESSION})({COORDINATES})?'.format(
+        REFSEQ=REFSEQ, ACCESSION=ACCESSION, COORDINATES=COORDINATES),
+    re.DOTALL)
 
 GI_SOURCE = re.compile('gi:(?P<gi>\d+)')
 
@@ -90,7 +96,7 @@ def main():
     references = []
 
     for i, g in enumerate(SeqIO.parse(args.genbank, 'genbank')):
-        sys.stderr.write('\rprocessing record ' + str(i))
+        sys.stderr.write('processing record ' + str(i) + '\r')
 
         try:
             record = parse_record(g)
@@ -206,7 +212,7 @@ def parse_refseq_source(record):
     acc = re.search(REFSEQ_SOURCE, record.annotations['comment'])
     gi = re.search(GI_SOURCE, record.annotations['comment'])
 
-    if not acc and not gi:
+    if not acc:
         raise ValueError('Cannot parse record')
 
     result = {}

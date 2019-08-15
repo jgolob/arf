@@ -1,26 +1,26 @@
 """
-Download and curate the NCBI 16S rRNA sequences
-
-TODO: download records updated before last download
+Download and curate the 16S rRNA sequences from NCBI
 """
-
+import configparser
+import csv
 import errno
 import os
+import SCons
 import sys
 import time
 
-# requirements installed in the virtualenv
-import SCons
 from SCons.Script import (
-    Variables, ARGUMENTS, Help, Copy, Environment, PathVariable)
+        ARGUMENTS, Depends, Environment, Help, PathVariable, Variables)
 
 venv = os.environ.get('VIRTUAL_ENV')
 if not venv:
     sys.exit('--> an active virtualenv is required'.format(venv))
+if not os.path.exists('settings.conf'):
+    sys.exit("Can't find settings.conf")
 
 
 def PathIsFileCreate(key, val, env):
-    """Validator to check if Path is a cache file,
+    """check if Path is a cache file and
     creating it if it does not exist."""
     if os.path.isdir(val):
         m = 'Path for option %s is a directory, not a file: %s'
@@ -32,72 +32,52 @@ def PathIsFileCreate(key, val, env):
         open(val, 'w').close()
 
 
-def blast_db(env, sequence_file, output_base, dbtype='nucl'):
+def blast_db(env, sequence_file, output_base):
     '''
-    Create a blast database
+    Create a blast database and file md5sum
     '''
-    prefix = dbtype[0]
-    extensions = ['.{0}{1}'.format(prefix, suffix)
-                  for suffix in ('hr', 'in', 'sq')]
-
+    extensions = ['.nhr', '.nin', '.nsq']
     blast_out = env.Command(
         target=[output_base + ext for ext in extensions],
         source=sequence_file,
-        action=('makeblastdb -dbtype {0} '
-                '-in $SOURCE '
-                '-out {1}'.format(dbtype, output_base)))
-
+        action='makeblastdb -dbtype nucl -in $SOURCE -out ' + output_base)
     env.Command(
         target=output_base,
         source=blast_out,
-        action=('md5sum $SOURCES > $TARGET'))
-
+        action='md5sum $SOURCES > $TARGET')
     return blast_out
 
 
 true_vals = ['t', 'y', '1']
 release = ARGUMENTS.get('release', 'no').lower()[0] in true_vals
 test = ARGUMENTS.get('test', 'no').lower()[0] in true_vals
-
+conf = configparser.SafeConfigParser()
+conf.read('settings.conf')
+settings = conf['TEST'] if test else conf['DEFAULT']
 vrs = Variables(None, ARGUMENTS)
-if test:
-    vrs.Add('base', help='Path to output directory', default='test_output')
-else:
-    vrs.Add('base', help='Path to output directory', default='output')
-vrs.Add(
-    'out',
-    help='Path to dated output sub directory',
-    default=os.path.join('$base', time.strftime('%Y%m%d')))
-vrs.Add('email', 'email address for ncbi', 'crosenth@uw.edu')
-vrs.Add('retry', 'ncbi retry milliseconds', '60000')
-# nreq should be set to 3 during weekdays
-vrs.Add('nreq', ('Number of concurrent http requests to ncbi'), 12)
-vrs.Add(
-    'tax_url',
-    default='"postgresql://crosenth:password@db3.labmed.uw.edu/molmicro"',
-    help='database url')
-vrs.Add(
-    'schema',
-    default='ncbi_taxonomy',
-    help='postgres database schema')
-
+out = 'test_output' if test else 'output'
+vrs.Add('base', help='Path to output directory', default=out)
+vrs.Add('out', default=os.path.join('$base', time.strftime('%Y%m%d')))
+vrs.Add('tax_url', default=settings['taxonomy'], help='database url')
 # cache vars
 vrs.Add(PathVariable(
     'genbank_cache', '', '$base/records.gb', PathIsFileCreate))
 vrs.Add(PathVariable(
-    'seqs_cache', '', '$base/seqs.fasta', PathIsFileCreate))
-vrs.Add(PathVariable(
-    'annotations_cache', '', '$base/annotations.csv', PathIsFileCreate))
+    'outliers_cache', '', '$base/filter_outliers.csv', PathIsFileCreate))
 vrs.Add(PathVariable(
     'pubmed_info_cache', '', '$base/pubmed_info.csv', PathIsFileCreate))
 vrs.Add(PathVariable(
-    'references_cache', '', '$base/references.csv', PathIsFileCreate))
+    'seqs_cache', '', '$base/seqs.fasta', PathIsFileCreate))
+vrs.Add(PathVariable(
+    'seq_info_cache', '', '$base/seq_info.csv', PathIsFileCreate))
 vrs.Add(PathVariable(
     'records_cache', '', '$base/records.txt', PathIsFileCreate))
 vrs.Add(PathVariable(
+    'references_cache', '', '$base/references.csv', PathIsFileCreate))
+vrs.Add(PathVariable(
     'refseq_info_cache', '', '$base/refseq_info.csv', PathIsFileCreate))
 vrs.Add(PathVariable(
-    'outliers_cache', '', '$base/filter_outliers.csv', PathIsFileCreate))
+    'unknown_cache', '', '$base/unknown.txt', PathIsFileCreate))
 
 environment_variables = dict(
     os.environ,
@@ -113,61 +93,38 @@ env = Environment(
     ENV=environment_variables,
     variables=vrs,
     shell='bash',
-    taxit=(
-        'singularity exec '
-        '--bind $$(readlink -f $$(pwd$))$)) '
-        '--pwd $$(readlink -f $$(pwd$))$)) '
-        '/molmicro/common/singularity/taxtastic-0.8.3.img taxit'),
-    deenurp=(
-        'singularity exec '
-        '--bind $$(readlink -f $$(pwd$))$)) '
-        '--pwd $$(readlink -f $$(pwd$))$)) '
-        '/molmicro/common/singularity/deenurp-v0.2.2-singularity2.3.img '
-        'deenurp')
+    eutils=settings['eutils'],
+    taxit=settings['taxit'],
+    deenurp=settings['deenurp'],
 )
 
-env.Decider('MD5-timestamp')
+env.Decider('MD5')
 
 Help(vrs.GenerateHelpText(env))
 
-rrna_16s = ('16s[All Fields] '
-            'AND rRNA[Feature Key] '
-            'AND Bacteria[Organism] '
-            'AND 500 : 99999999999[Sequence Length]')
-
-mefetch_acc = ('mefetch -vv '
-               '-email $email '
-               '-mode text '
-               '-format acc '
-               '-max-retry -1 '  # continuous retries
-               '-retry $retry '
-               '-proc $nreq '
-               '-log $out/ncbi.log '
-               '-out $TARGET')
-
-"""
-Download accessions for bacteria with 16s rrna annotations
-NOT environmental or unclassified
-
-TODO: Limit to a recent date frame as initial search.  If latest records
-are not found then run the whole thing in full.  This will save time in
-execution of this step.
-"""
 classified = env.Command(
     source=None,
-    target='$out/esearch/classified.txt',
-    action=('esearch -db nucleotide -query "' + rrna_16s +
-            'NOT(environmental samples[Organism] '
-            'OR unclassified Bacteria[Organism])" | ' + mefetch_acc))
+    target='$out/ncbi/classified.txt',
+    action=['$eutils %(esearch)s "%(classified)s" | '
+            '%(acc)s -out $TARGET' % settings])
 
 """
-Download TM7 accessions
+Candidatus Saccharibacteria
+https://gitlab.labmed.uw.edu/molmicro/mkrefpkg/issues/36
 """
 tm7 = env.Command(
     source=None,
-    target='$out/esearch/tm7.txt',
-    action=('esearch -db nucleotide -query "' + rrna_16s +
-            ' AND Candidatus Saccharibacteria[Organism]" | ' + mefetch_acc))
+    target='$out/ncbi/tm7/versions.txt',
+    action='$eutils %(esearch)s "%(tm7)s" | %(acc)s -out $TARGET' % settings)
+
+"""
+Concat everything.  records.txt will be used to remove old records
+previously downloaded.
+"""
+ncbi = env.Command(
+    source=[classified, tm7],
+    target='$out/ncbi/records.txt',
+    action='cat $SOURCES > $TARGET')
 
 """
 get accessions (versions) of records considered type strains
@@ -176,195 +133,209 @@ http://www.ncbi.nlm.nih.gov/news/01-21-2014-sequence-by-type/
 """
 types = env.Command(
     source=None,
-    target='$out/1200bp/valid/types/esearch.txt',
-    action=('esearch -db nucleotide -query "' + rrna_16s +
-            ' AND sequence_from_type[Filter]" | ' + mefetch_acc))
-
-if test:
-    tax_ids = (i.strip() for i in open('testfiles/tax_ids.txt') if i)
-    tax_ids = ('txid' + i + '[Organism]' for i in tax_ids)
-    records = env.Command(
-        target='$out/esearch.txt',
-        source='testfiles/tax_ids.txt',
-        action=('esearch -db nucleotide -query "' + rrna_16s +
-                ' AND (' + ' OR '.join(tax_ids) + ')" | ' + mefetch_acc))
-else:
-    """
-    concat our download set
-
-    TODO: generalize a `for` loop to do this concatinization
-    TODO: add a sort | uniq
-    """
-    records = env.Command(
-        source=[classified, tm7],
-        target='$out/esearch.txt',
-        action='cat $SOURCES > $TARGET')
+    target='$out/ncbi/types.txt',
+    action='$eutils %(esearch)s "%(types)s" | %(acc)s -out $TARGET' % settings)
 
 """
-Do not download record accessions in the ignore list or
-that have been previously downloaded in the records_cache.
-Exit script if no new records exist.
+Check the cache for last download_date and download list of modified
+records in order to re-download modified records that we have previously
+downloaded.
+"""
+si = csv.DictReader(open(env.subst('$seq_info_cache')))
+si = [time.strptime(r['download_date'], '%d-%b-%Y') for r in si]
+if si:
+    download_date = time.strftime('%Y/%m/%d', sorted(si)[-1])
+else:
+    download_date = time.strftime('%Y/%m/%d')
+modified = env.Command(
+    source=None,
+    target='$out/ncbi/modified.txt',
+    action=['$eutils %(esearch)s "%(classified)s '
+            'AND %(download_date)s[Modification Date] : '
+            '3000[Modification Date]" | %(acc)s -out $TARGET' %
+            {'download_date': download_date, **settings}])
+
+"""
+New records are records not previously downloaded
+in the records_cache or in unknown_cache
 """
 new = env.Command(
-    target='$out/new/records.txt',
-    source=[records, '$records_cache', 'data/ignore.txt'],
-    action=['cat ${SOURCES[-2:]} | '
+    target='$out/ncbi/new.txt',
+    source=[
+        ncbi,
+        '$records_cache',
+        '$unknown_cache'],
+    action=['cat ${SOURCES[1:]} | '
             'grep '
-            '--invert-match '
+            '--file - '
             '--fixed-strings '
-            '--file /dev/stdin '
+            '--invert-match '
+            '--line-regexp '
             '${SOURCES[0]} > $TARGET '
-            '|| (echo "No new records" && exit 1)'])
+            '|| true'])
 
+'''
+combine new and modified and remove do_not_download.txt records
+'''
+combined = env.Command(
+    target='$out/ncbi/combined.txt',
+    source=[new, modified, settings['do_not_download']],
+    action=['cat ${SOURCES[:2]} | '
+            'grep '
+            '--file ${SOURCES[2]} '
+            '--fixed-strings '
+            '--invert-match '
+            '--line-regexp '
+            '- | '
+            'sort --unique > $TARGET '
+            '|| true'])
+
+"""
+Filter accession2taxid into a much smaller list of 16s records and
+update taxids.
+"""
+accession2taxid = env.Command(
+    target='$out/ncbi/accession2taxid.csv',
+    source=[settings['accession2taxid'], ncbi],
+    action=['accession2taxid.py $SOURCES | '
+            '$taxit update_taxids '
+            '--outfile $TARGET '
+            '--unknown-action drop '
+            '- $tax_url'])
+
+"""
+Remove esearch records not present in accession2taxid and identify
+cached records that changed or merged tax_ids to be re-downloaded
+"""
+download = env.Command(
+    target='$out/ncbi/download.txt',
+    source=[accession2taxid, combined, '$seq_info_cache'],
+    action='updated.py $SOURCES $TARGET')
+
+"""
+download genbank records
+"""
 gbs = env.Command(
-    target='$out/new/records.gb',
-    source=new,
-    action=['mefetch -vv '  # download feature tables
-            '-email $email '
-            '-retry $retry '
-            '-id $SOURCE '
-            '-db nucleotide '
-            '-format ft '
-            '-retmax 1 '
-            '-max-retry -1 '  # continuous retry
-            '-log $out/ncbi.log '
-            '-proc $nreq | '
-            # extract 16s features
-            'ftract -feature "rrna:product:16S ribosomal RNA" | '
-            'accession_version.py | '  # parse accession.version from id column
-            'mefetch '  # download genbank records
-            '-vv '
-            '-email $email '
-            '-max-retry -1 '  # continuous retry
-            '-retmax 1 '
-            '-csv '
-            '-db nucleotide '
-            '-format gbwithparts '
-            '-log $out/ncbi.log '
-            '-proc $nreq '
-            '-retry $retry > $TARGET'])
+    target='$out/ncbi/records.gb',
+    source=download,
+    action=['%(fts)s -id $SOURCE | '
+            '%(ftract)s | '
+            '%(gbs)s -out $TARGET' % settings])
 
-"""
-extract
-"""
 today = time.strftime('%d-%b-%Y')
-new_fa, new_annotations, new_pub_info, new_refs, new_refseq_info = env.Command(
-    target=['$out/new/seqs.fasta',
-            '$out/new/annotations.csv',
-            '$out/new/pubmed_info.csv',
-            '$out/new/references.csv',
-            '$out/new/refseq_info.csv'],
+fa, seq_info, pubmed_info, references, refseq_info = env.Command(
+    target=['$out/ncbi/seqs.fasta',
+            '$out/ncbi/seq_info.csv',
+            '$out/ncbi/pubmed_info.csv',
+            '$out/ncbi/references.csv',
+            '$out/ncbi/refseq_info.csv'],
     source=gbs,
     action='extract_genbank.py $SOURCE ' + today + ' $TARGETS')
 
 """
-Record versions returned from esearch that had no actual 16s features
+Record versions returned from esearch that had no actual 16s features or were
+below `ftract -min-length`
 """
 no_features = env.Command(
-    target='$out/new/no_features.txt',
-    source=[new_annotations, new],
+    target='$out/ncbi/no_features.txt',
+    source=[seq_info, download],
     action=('csvcut.py --columns version ${SOURCES[0]} | '
             'tail -n +2 | '
             'grep '
-            '--invert-match '
+            '--file - '
             '--fixed-strings '
-            '--file /dev/stdin '
+            '--invert-match '
+            '--line-regexp '
             '${SOURCES[1]} > $TARGET '
-            # avoid the grep no match exit code 1 that scons hates
             '|| true'))
-
-"""
-filter invalid tax_ids
-
-Do nothing with the unknown records for now because it might simply mean
-the ncbi taxonomy pipeline is out of sync with the latest 16s records
-"""
-known_info, _ = env.Command(
-    target=['$out/new/taxit/annotations.csv',
-            '$out/new/taxit/unknown.csv'],
-    source=new_annotations,
-    action=['$taxit update_taxids '
-            '--unknown-action drop '
-            '--unknowns ${TARGETS[1]} '
-            '--outfile ${TARGETS[0]} '
-            '--schema $schema '
-            '$SOURCE $tax_url'])
 
 """
 vsearch new sequences with training set to test sequence orientation
 and 16s region
-
-TODO: evaluate performance with cmalign - Will cmalign see orientations?
 """
 vsearch = env.Command(
-    target='$out/new/vsearch.csv',
-    source=[new_fa, 'data/rdp_16s_type_strains.fasta.bz2'],
+    target='$out/ncbi/vsearch/vsearch.tsv',
+    source=[fa, 'data/rdp_16s_type_strains.fasta.bz2'],
     action=('vsearch '
-            '--usearch_global ${SOURCES[0]} '
             '--db ${SOURCES[1]} '
             '--id 0.70 '
-            '--threads 14 '
-            '--userfields query+target+qstrand+id+tilo+tihi '
-            '--strand both '
-            '--top_hits_only '
-            '--output_no_hits '
+            '--iddef 2 '  # matching cols / alignment len excluding term gaps
             '--maxaccepts 1 '  # default is 1
             '--maxrejects 32 '  # default is 32
-            '--userout $TARGET'))
+            '--mincols 350 '  # 500 (min len downloaded) * 0.70 (--query_col)
+            '--output_no_hits '
+            '--query_cov 0.70 '
+            '--strand both '
+            '--threads 14 '
+            '--top_hits_only '
+            '--usearch_global ${SOURCES[0]} '
+            '--userfields query+target+qstrand+id+tilo+tihi '
+            '--userout $TARGET'
+            ' || true'))
 
 """
-Fix record orientation.  Drop sequences with no alignments.
-These records are rare and we want to be able to re-download later
-them when the 16s training set updates.
+Fix record orientation and ignore sequences with no vsearch alignments.
+
+NOTE: unknown.txt will contain records (accession.version) with ANY
+filtered 16s allele.
 """
-vsearch_fa, _ = env.Command(
-    target=['$out/new/vsearch/seqs.fa',
-            '$out/new/vsearch/unknown.fa'],
-    source=[vsearch, new_fa],
-    action='vsearch.py --unknowns ${TARGETS[1]} --out ${TARGETS[0]} $SOURCES')
+fa, seq_info, _, _ = env.Command(
+    target=['$out/ncbi/vsearch/seqs.fasta',
+            '$out/ncbi/vsearch/seq_info.csv',
+            '$out/ncbi/vsearch/unknown.fasta',
+            '$out/ncbi/vsearch/unknown.txt'],
+    source=[vsearch, fa, seq_info, '$unknown_cache'],
+    action=['vsearch.py $SOURCES $TARGETS',
+            'cp ${TARGETS[3]} $unknown_cache'])
 
 """
-Append with older records
+Remove new records with unknown tax_ids
+"""
+seq_info = env.Command(
+    target='$out/ncbi/update_taxids/seq_info.csv',
+    source=seq_info,
+    action=['$taxit update_taxids '
+            '--outfile $TARGET '
+            '--unknown-action drop '
+            '$SOURCE $tax_url'])
 
-1. Drop seqnames missing either a sequence or row in seq_info, sequences
-   filtered out of the vsearch 16s alignment or sequences with unknown tax_ids
+"""
+Refresh/append with older records
+
+1. Drop seqnames missing either a sequence or row in seq_info
 2. Append seqs, seq_info, pubmed_info and references to previous data set
-3. Drop records not in records.txt file
+3. Drop records not in the ncbi records.txt file
 4. Drop sequences that have a refseq equivalent
 5. Deduplicate pubmeds and references
-6. Copy and cache full dataset
-
-NOTE: seqs that failed either the vsearch or taxit update_taxids will
-not be appended to the records.txt file and will therefore be re-downloaded
-the next time this pipeline is run
+6. Copy and cache
 """
-fa, refresh_annotations, pubmed_info, references, refseq_info, _ = env.Command(
-    target=['$out/seqs.fasta',
-            '$out/refresh/annotations.csv',
+fa, seq_info, pubmed_info, _, refseq_info, _ = env.Command(
+    target=['$out/ncbi/combined/seqs.fasta',
+            '$out/ncbi/combined/seq_info.csv',
             '$out/pubmed_info.csv',
             '$out/references.csv',
             '$out/refseq_info.csv',
             '$out/records.txt'],
-    source=[records,
-            vsearch_fa, '$seqs_cache',
-            known_info, '$annotations_cache',
-            new_pub_info, '$pubmed_info_cache',
-            new_refs, '$references_cache',
-            new_refseq_info, '$refseq_info_cache',
+    source=[ncbi,
+            fa, '$seqs_cache',
+            seq_info, '$seq_info_cache',
+            pubmed_info, '$pubmed_info_cache',
+            references, '$references_cache',
+            refseq_info, '$refseq_info_cache',
             no_features, '$records_cache'],
     action=['refresh.py $SOURCES $TARGETS',
             # cache
-            Copy('$seqs_cache', '${TARGETS[0]}'),
-            Copy('$pubmed_info_cache', '${TARGETS[2]}'),
-            Copy('$references_cache', '${TARGETS[3]}'),
-            Copy('$refseq_info_cache', '${TARGETS[4]}'),
-            Copy('$records_cache', '${TARGETS[5]}')])
+            'cp ${TARGETS[0]} $seqs_cache',
+            'cp ${TARGETS[1]} $seq_info_cache',
+            'cp ${TARGETS[2]} $pubmed_info_cache',
+            'cp ${TARGETS[3]} $references_cache',
+            'cp ${TARGETS[4]} $refseq_info_cache',
+            'cp ${TARGETS[5]} $records_cache'])
 
 """
 append new records to global list
 
-NOTE: see bin/dedup_gb.py for genbank record cache maintenance
-TODO: create bin/dedup_gb.py
+TODO: create bin/dedup_gb.py for genbank record cache maintenance
 """
 env.Command(
     target=None,
@@ -372,164 +343,381 @@ env.Command(
     action='cat $SOURCE >> $genbank_cache')
 
 """
-update all tax_ids
+taxonomy
 """
-annotations = env.Command(
-    target='$out/annotations.csv',
-    source=refresh_annotations,
-    action=['$taxit -v update_taxids '
-            '--out $TARGET '
-            '--schema $schema '
-            '$SOURCE $tax_url',
-            Copy('$annotations_cache', '$TARGET')])
+taxonomy = env.Command(
+    target='$out/taxonomy.csv',
+    source=seq_info,
+    action='$taxit -v taxtable --seq-info $SOURCE --out $TARGET $tax_url')
 
 """
-pull sequences at least 1200 bp and less than 1% ambiguous
+feather file
 """
-full_annotations = env.Command(
-    target='$out/1200bp/annotations.csv',
-    source=annotations,
-    action=('partition_refs.py '
-            # filtering
-            '--min-length 1200 '
-            '--prop-ambig-cutoff 0.01 '
-            '--out-annotations $TARGET '
-            '$SOURCE'))
+feather = env.Command(
+    target='$out/seq_info.feather',
+    source=seq_info,
+    action='to_feather.py $SOURCE $TARGET')
+
+"""Add feather file columns"""
+"""
+Add 'species' taxonomy id, species_name, genus taxid and genus name
+"""
+tax_cols = env.Command(
+    target='$out/.feather/taxonomy.md5',
+    source=[feather, taxonomy],
+    action=['taxonomy.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
 
 """
-filter for valid annotations
+https://github.com/nhoffman/ya16sdb/issues/11
 """
-valid_annotations = env.Command(
-    target='$out/1200bp/valid/annotations.csv',
-    source=full_annotations,
-    action='is_valid.py --out $TARGET  --schema $schema $SOURCE $tax_url')
+is_type = env.Command(
+    target='$out/.feather/is_type.md5',
+    source=[feather, types],
+    action=['is_type.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
+
+is_published = env.Command(
+    target='$out/.feather/is_publshed.md5',
+    source=[feather, pubmed_info],
+    action=['is_published.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
 
 """
-pull valid sequences
+add is_refseq and original column with refseq accession
 """
-valid_fa = env.Command(
-    target='$out/1200bp/valid/seqs.fasta',
-    source=[fa, valid_annotations],
-    action=('partition_refs.py '
-            '--fasta ${SOURCES[0]} '
-            '--out-fa $TARGET '
-            '${SOURCES[1]}'))
+is_refseq = env.Command(
+    target='$out/.feather/is_refseq.md5',
+    source=[feather, refseq_info],
+    action=['is_refseq.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
+
+'''
+is_valid attribute from taxtastic
+
+https://github.com/fhcrc/taxtastic/blob/master/taxtastic/ncbi.py#L172
+'''
+is_valid = env.Command(
+    target='$out/.feather/is_valid.md5',
+    source=feather,
+    action=['is_valid.py $SOURCE $tax_url', 'md5sum $SOURCE > $TARGET'])
 
 """
-Make general valid taxtable with all ranks included
+https://gitlab.labmed.uw.edu/uwlabmed/mkrefpkg/issues/40
 """
-valid_tax = env.Command(
-    target='$out/1200bp/valid/taxonomy.csv',
-    source=valid_annotations,
-    action=('$taxit -v taxtable '
-            '--seq-info $SOURCE '
-            '--out $TARGET '
-            '--schema $schema '
-            '$tax_url'))
-
-blast_db(env, valid_fa, '$out/1200bp/valid/blast')
+confidence = env.Command(
+    target='$out/.feather/confidence.md5',
+    source=feather,
+    action=['confidence.py $SOURCE', 'md5sum $SOURCE > $TARGET'])
+Depends(confidence, [is_type, is_refseq, is_published])
 
 """
-Remove and re-append is_type column with sequences per discussion:
-
-https://gitlab.labmed.uw.edu/uwlabmed/mkrefpkg/issues/14
+calculate md5hash of sequences
 """
-type_annotations = env.Command(
-    target='$out/1200bp/valid/types/annotations.csv',
-    source=[valid_annotations, types],
-    action='is_type.py $SOURCES $TARGET')
+seqhash = env.Command(
+    target='$out/.feather/seqhash.md5',
+    source=[feather, fa],
+    action=['seqhash.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
+
+"""End feather columns"""
+
+sort_values = env.Command(
+    target='$out/.feather/sorted.md5',
+    source=feather,
+    action=['sort_values.py $SOURCE %(sort_by)s' % settings,
+            'md5sum $SOURCE > $TARGET'])
+Depends(sort_values, [is_type, is_refseq, is_published, seqhash])
+
+fa, seq_info = env.Command(
+    target=['$out/seqs.fasta', '$out/seq_info.csv'],
+    source=[fa, feather],
+    action='partition_refs.py $SOURCES $TARGETS')
+Depends([fa, seq_info], sort_values)
+
+raw = fa
 
 """
 pull type sequences
 """
-type_fa = env.Command(
-    target='$out/1200bp/valid/types/seqs.fasta',
-    source=[valid_fa, type_annotations],
+type_fa, type_info = env.Command(
+    target=['$out/dedup/1200bp/types/seqs.fasta',
+            '$out/dedup/1200bp/types/seq_info.csv'],
+    source=[fa, feather],
+    action=['partition_refs.py '
+            '--drop-duplicate-sequences '
+            '--is_species '
+            '--is_type '
+            '--is_valid '
+            '--min-length 1200 '
+            '--prop-ambig-cutoff 0.01 '
+            '$SOURCES $TARGETS'])
+
+"""
+Make sequence_from_type taxtable with all ranks included
+"""
+type_tax = env.Command(
+    target='$out/dedup/1200bp/types/taxonomy.csv',
+    source=type_info,
+    action='$taxit -v taxtable --seq-info $SOURCE --out $TARGET $tax_url')
+
+"""
+Create taxtable output with replacing tax_ids with taxnames
+"""
+type_lineages = env.Command(
+    target='$out/dedup/1200bp/types/lineages.csv',
+    source=[type_tax, type_info],
+    action='$taxit lineage_table --csv-table $TARGET $SOURCES')
+
+"""
+Create mothur output
+
+https://mothur.org/wiki/Taxonomy_File
+"""
+types_mothur = env.Command(
+    target='$out/dedup/1200bp/types/lineages.txt',
+    source=[type_tax, type_info],
+    action='$taxit lineage_table --taxonomy-table $TARGET $SOURCES')
+
+blast_db(env, type_fa, '$out/dedup/1200bp/types/blast')
+
+"""
+filter into named set and other criteria
+"""
+fa, seq_info = env.Command(
+    target=['$out/dedup/1200bp/named/seqs.fasta',
+            '$out/dedup/1200bp/named/seq_info.csv'],
+    source=[fa, feather],
     action=('partition_refs.py '
-            '--out-fa $TARGET '
-            '--fasta ${SOURCES[0]} '
-            '${SOURCES[1]}'))
+            '--drop-duplicate-sequences '
+            '--is_species '
+            '--is_valid '
+            '--min-length 1200 '
+            '--prop-ambig-cutoff 0.01 '
+            '--species-cap %(species_cap)s '
+            '${SOURCES[:2]} $TARGETS' % settings))
+Depends([fa, seq_info], [is_valid, tax_cols, seqhash])
+
+named = fa
 
 """
-Deduplicate sequences by isolate (accession)
-
-Appends a weight column showing number of sequences being represented
+Make named taxtable for filter_outliers
 """
-dedup_fa, dedup_annotations = env.Command(
-    target=['$out/1200bp/valid/dedup/seqs.fasta',
-            '$out/1200bp/valid/dedup/annotations.csv'],
-    source=[valid_fa, valid_annotations],
-    action=('$deenurp -v deduplicate_sequences '
-            '--group-by accession '
-            '$SOURCES $TARGETS'))
+taxonomy = env.Command(
+    target='$out/dedup/1200bp/named/taxonomy.csv',
+    source=seq_info,
+    action='$taxit -v taxtable --seq-info $SOURCE --out $TARGET $tax_url')
 
 """
-dedup info file for filter_outliers
+Trimmed seqname,tax_id map file that can be easily cached by filter_outliers
 """
-dedup_info = env.Command(
-    target='$out/1200bp/valid/dedup/seq_info.csv',
-    source=dedup_annotations,
+taxid_map = env.Command(
+    target='$out/dedup/1200bp/named/tax_id_map.csv',
+    source=seq_info,
     action='csvcut.py --columns seqname,tax_id --out $TARGET $SOURCE')
 
 """
-update tax_ids in details_in cache
+Create taxtable output with replacing tax_ids with taxnames
 """
-filtered_details_in = env.Command(
-    source='$outliers_cache',
-    target='$out/1200bp/valid/dedup/filtered/details_in.csv',
-    action=('$taxit update_taxids '
-            '--schema $schema '
-            '--outfile $TARGET '
-            '$SOURCE $tax_url'
-            # continue if filter_outliers cache is empty
-            ' || echo "Continuing without filter_outliers cache"'))
+lineages = env.Command(
+    target='$out/dedup/1200bp/named/lineages.csv',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --csv-table $TARGET $SOURCES')
+
+"""
+Create taxtable output with replacing tax_ids with taxnames
+
+https://mothur.org/wiki/Taxonomy_File
+"""
+mothur = env.Command(
+    target='$out/dedup/1200bp/named/lineages.txt',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --taxonomy-table $TARGET $SOURCES')
 
 """
 Filter sequences. Use --threads if you need to to limit the number
 of processes - otherwise deenurp will use all of them!
 """
-filtered_fa, filtered_info, filtered_details, deenurp_log = env.Command(
-    source=[dedup_fa, dedup_info, valid_tax, filtered_details_in],
-    target=['$out/1200bp/valid/dedup/filtered/seqs.fasta',
-            '$out/1200bp/valid/dedup/filtered/seq_info.csv',
-            '$out/1200bp/valid/dedup/filtered/details_out.csv',
-            '$out/1200bp/valid/dedup/filtered/deenurp.log'],
+fa, details = env.Command(
+    source=[fa, taxid_map, taxonomy, '$outliers_cache'],
+    target=['$out/dedup/1200bp/named/filtered/unsorted.fasta',
+            '$out/dedup/1200bp/named/filtered/outliers.csv'],
     action=['$deenurp -vvv filter_outliers '
-            '--log ${TARGETS[3]} '
+            '--cluster-type single '
+            '--detailed-seqinfo ${TARGETS[1]} '
+            '--distance-percentile 90.0 '
             '--filter-rank species '
-            '--threads-per-job 14 '
             '--jobs 1 '
+            '--log $out/dedup/1200bp/named/filtered/deenurp.log '
+            '--max-distance 0.02 '
+            '--min-distance 0.01 '
+            '--min-seqs-for-filtering 5 '
             '--output-seqs ${TARGETS[0]}  '
-            '--filtered-seqinfo ${TARGETS[1]} '
-            '--detailed-seqinfo ${TARGETS[2]} '
             '--previous-details ${SOURCES[3]} '
             '--strategy cluster '
-            '--cluster-type single '
-            '--distance-percentile 90.0 '
-            '--min-distance 0.01 '
-            '--max-distance 0.02 '
-            '--min-seqs-for-filtering 5 '
+            '--threads-per-job 14 '
             '${SOURCES[:3]}',
-            # cache it
-            Copy('$outliers_cache', '${TARGETS[2]}')])
+            'cp ${TARGETS[1]} $outliers_cache'])
+
+"""
+add distance metrics to feather file
+"""
+filter_outliers = env.Command(
+    target='$out/.feather/filter_outliers.md5',
+    source=[feather, details],
+    action=['filter_outliers.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
+
+"""
+Create a filtered seq_info.csv file
+"""
+fa, seq_info = env.Command(
+    target=['$out/dedup/1200bp/named/filtered/seqs.fasta',
+            '$out/dedup/1200bp/named/filtered/seq_info.csv'],
+    source=[fa, feather],
+    action='partition_refs.py $SOURCES $TARGETS')
+
+"""
+Make general named taxtable with all ranks included for filter_outliers
+"""
+taxonomy = env.Command(
+    target='$out/dedup/1200bp/named/filtered/taxonomy.csv',
+    source=seq_info,
+    action='$taxit -v taxtable --seq-info $SOURCE --out $TARGET $tax_url')
+
+"""
+Create taxtable output with replacing tax_ids with taxnames
+"""
+filtered_lineages = env.Command(
+    target='$out/dedup/1200bp/named/filtered/lineages.csv',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --csv-table $TARGET $SOURCES')
+
+"""
+Create mothur output
+
+https://mothur.org/wiki/Taxonomy_File
+"""
+mothur = env.Command(
+    target='$out/dedup/1200bp/named/filtered/lineages.txt',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --taxonomy-table $TARGET $SOURCES')
+
+"""
+expand taxids into descendants
+"""
+trusted_taxids = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/taxids.txt',
+    source=settings['trust'],
+    action='$taxit get_descendants --out $TARGET $tax_url $SOURCE')
+
+"""
+expand taxids into descendants
+"""
+dnt_ids = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/dnt_ids.txt',
+    source=settings['do_not_trust'],
+    action='$taxit get_descendants --out $TARGET $tax_url $SOURCE')
+
+trusted = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/trust_ids.txt',
+    source=[settings['trust'], trusted_taxids],
+    action='cat $SOURCES > $TARGET')
+
+dnt = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/dnt.txt',
+    source=[settings['do_not_trust'], dnt_ids],
+    action='cat $SOURCES > $TARGET')
+
+"""
+Same as named set with inliers and trust/no_trust records
+"""
+fa, seq_info = env.Command(
+    target=['$out/dedup/1200bp/named/filtered/trusted/seqs.fasta',
+            '$out/dedup/1200bp/named/filtered/trusted/seq_info.csv'],
+    source=[raw, feather, trusted, dnt],
+    action=['partition_refs.py '
+            '--do_not_trust ${SOURCES[3]} '
+            '--drop-duplicate-sequences '
+            '--inliers '  # filter_outliers = True & is_out = False
+            '--is_species '
+            '--is_valid '
+            '--min-length 1200 '
+            '--prop-ambig-cutoff 0.01 '
+            '--species-cap %(species_cap)s '
+            '--trusted ${SOURCES[2]} '
+            '${SOURCES[:2]} $TARGETS' % settings])
+Depends([fa, seq_info], filter_outliers)
 
 """
 Make filtered taxtable with ranked columns and no_rank rows
 """
-filtered_tax = env.Command(
-    target='$out/1200bp/valid/dedup/filtered/taxonomy.csv',
-    source=filtered_info,
-    action=('$taxit taxtable --seq-info $SOURCE --schema $schema $tax_url '
-            '| ranked.py --columns --out $TARGET'))
+taxonomy = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/taxonomy.csv',
+    source=seq_info,
+    action='$taxit taxtable --seq-info $SOURCE --out $TARGET $tax_url')
 
-blast_db(env, filtered_fa, '$out/1200bp/valid/dedup/filtered/blast')
+"""
+Taxtable output replacing tax_ids with taxnames
+"""
+lineages = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/lineages.csv',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --csv-table $TARGET $SOURCES')
+
+"""
+Mothur output - https://mothur.org/wiki/Taxonomy_File
+"""
+mothur = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/lineages.txt',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --taxonomy-table $TARGET $SOURCES')
+
+blast_db(env, fa, '$out/dedup/1200bp/named/filtered/trusted/blast')
+
+'''
+Pull type strains from trusted db
+'''
+fa, seq_info = env.Command(
+    target=['$out/dedup/1200bp/named/filtered/trusted/types/seqs.fasta',
+            '$out/dedup/1200bp/named/filtered/trusted/types/seq_info.csv'],
+    source=[fa, feather],
+    action='partition_refs.py --is_type $SOURCES $TARGETS')
+
+"""
+Make trusted type taxtable with ranked columns and no_rank rows
+"""
+taxonomy = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/types/taxonomy.csv',
+    source=seq_info,
+    action=('$taxit taxtable '
+            '--seq-info $SOURCE '
+            '--out $TARGET '
+            '$tax_url'))
+
+"""
+Create taxtable output with replacing tax_ids with taxnames
+"""
+lineages = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/types/lineages.csv',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --csv-table $TARGET $SOURCES')
+
+"""
+Mothur output
+
+https://mothur.org/wiki/Taxonomy_File
+"""
+mothur = env.Command(
+    target='$out/dedup/1200bp/named/filtered/trusted/types/lineages.txt',
+    source=[taxonomy, seq_info],
+    action='$taxit lineage_table --taxonomy-table $TARGET $SOURCES')
+
+blast_db(env, fa, '$out/dedup/1200bp/named/filtered/trusted/types/blast')
 
 '''
 find top hit for each sequence among type strains
+
+NOTE: alleles will never align with themselves (--self) BUT
+can align with other alleles in the same genome accession
 '''
-type_hits = env.Command(
-    target='$out/1200bp/valid/dedup/filtered/vsearch.blast6out',
-    source=[dedup_fa, type_fa],
+named_type_hits = env.Command(
+    target='$out/dedup/1200bp/named/vsearch.tsv',
+    source=[named, fa],
     action=('vsearch --usearch_global ${SOURCES[0]} '
             '--db ${SOURCES[1]} '
             '--blast6out $TARGET '
@@ -540,38 +728,32 @@ type_hits = env.Command(
             '--maxaccepts 1 '
             '--strand plus'))
 
-'''
-bokeh plot filtered sequences
-
-hard coded: sort column 2 (records) desc
-'''
-env.Command(
-    target=['$out/1200bp/valid/dedup/filtered/index.html',
-            '$out/1200bp/valid/dedup/filtered/plots/map.csv'],
-    source=[filtered_details,
-            type_hits,
-            annotations,
-            valid_tax,
-            types,
-            deenurp_log],
-    action=('plot_details.py ${SOURCES[:5]} '
-            '--param strategy:cluster '
-            '--param cluster_type:single '
-            '--param distance_percentile:90.0 '
-            '--param min_distance:0.01 '
-            '--param max_distance:0.02 '
-            '--log-in ${SOURCES[5]} '
-            '--plot-dir $out/1200bp/valid/dedup/filtered/plots '
-            '--plot-map ${TARGETS[1]} '
-            '--plot-index ${TARGETS[0]}'))
+"""
+add named_type_hits match columns to feather file
+"""
+match_hits = env.Command(
+    target='$out/.feather/match_hits.md5',
+    source=[feather, named_type_hits],
+    action=['match_hits.py $SOURCES', 'md5sum ${SOURCES[0]} > $TARGET'])
+Depends([match_hits], tax_cols)
 
 """
-Append contributers
+copy taxdmp file into output dir so a ``taxit new_database``
+can be built again in the future if needed
 """
-contributors = env.Command(
-    source='.git/logs/HEAD',
-    target='contributors.txt',
-    action='git log --all --format="%cN <%cE>" | sort | uniq > $TARGET')
+taxdmp = env.Command(
+    source=settings['taxdmp'],
+    target='$out/' + os.path.basename(settings['taxdmp']),
+    action='cp $SOURCE $TARGET')
+
+"""
+git version used to generate output
+"""
+commit = env.Command(
+    target='$out/git_version.txt',
+    source='.git/objects',
+    action=['(echo $$(hostname):$$(pwd); '
+            'git describe --tags --dirty) > $TARGET'])
 
 """
 release steps
@@ -604,11 +786,6 @@ if release:
         target=os.path.join('$base', 'LATEST'),
         source='$out',
         action=SymLink())
-
-    commit = env.Command(
-        target='$out/git_version.txt',
-        source='.git/objects',
-        action='git describe --tags > $TARGET')
 
     freeze = env.Command(
         target='$out/requirements.txt',

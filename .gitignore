@@ -1,4 +1,9 @@
 .sconsign.dblite
 *-env
-output
+output*
 test_output
+.DS_Store
+._.DS_Store
+settings.conf
+vault_pass.txt
+__pycache__

@@ -1,0 +1,6 @@
+[dokku-hosts]
+
+dokku-stack-dev
+dokku-stack-prod
+
+
