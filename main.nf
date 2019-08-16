@@ -53,12 +53,14 @@ params.ncbi_concurrent_connections = 3
 params.retry_max = 1
 params.retry_delay = 60000
 params.min_len = 500
+params.api_key = false
+params.debug = false
 
 //params.rRNA16S_bact_search = "16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"
 params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 //params.rRNA16S_arch_search = "16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"
 params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/30"[Publication Date]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
-
+params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
 
 // Function which prints help message text
 def helpMessage() {
@@ -76,6 +78,7 @@ def helpMessage() {
 
 
     Options:
+    --debug                         Cuts down the number of records for testing
 
     """.stripIndent()
 }
@@ -139,9 +142,10 @@ if (params.help || paramInvalid()){
     exit 0
 }
 
-// Step 1a and 1b: Retrieve current accessions with a 16S rRNA (archaea and bacteria)
-process retrieveAccArchaea {
-    container 'golob/medirect:0.14.0__bcw.0.3.1A'
+// Step 1: Retrieve current accessions with a 16S rRNA
+// Archaea
+process retrieveAcc_archaea {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'retry'
 
@@ -159,9 +163,9 @@ process retrieveAccArchaea {
     --out archaea_acc.txt
     """
 }
-
-process retrieveAccBacteria {
-    container 'golob/medirect:0.14.0__bcw.0.3.1A'
+// Bacteria
+process retrieveAcc_bacteria {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'retry'
 
@@ -180,104 +184,183 @@ process retrieveAccBacteria {
     """
 }
 
+// From type strain organisms
+process retrieveAcc_types {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label 'io_limited'
+    errorStrategy 'retry'
+
+    output:
+        file "types_acc.txt" into acc_types_f
+
+    """
+    set -e
+
+    ncbi_get_nt_accessions_for_query \
+    --email ${params.email} \
+    --ncbi_concurrent_connections ${params.ncbi_concurrent_connections} \
+    --retry_max ${params.retry_max} --retry_delay ${params.retry_delay} \
+    --query "${params.rRNA16S_type_search}" \
+    --out types_acc.txt
+    """
+}
+
+// TODO check for modified records by extracting modified dates
+
+
+// Step 2. Use set adventures to figure out the records we have not looked at
+// Can also include here masked records to remove (known empty, etc)
 current_records_f = file "${params.repo}/records.txt"
-process getNewAccessions {
-    container 'golob/medirect:0.14.0__bcw.0.3.1A'
+process accessionsToDownload {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     //errorStrategy 'retry'
 
     input:
+        file acc_types_f
         file acc_archaea_f
         file acc_bacteria_f
         file current_records_f
 
     output:
-        stdout into acc_to_download_out
-
-    """
-    #!/usr/bin/env python
-    import csv
-
-    current_version = {
-        l.strip()
-        for l in open("${current_records_f}")
-    }
-    
-    archaea_ver = {
-        l.strip()
-        for l in open("${acc_archaea_f}", 'rt')
-    }
-    bacteria_ver = {
-        l.strip()
-        for l in open("${acc_bacteria_f}", 'rt')
-    }
-    new_versions = archaea_ver.union(bacteria_ver) - current_version
-    for acc in new_versions:
-        if acc is not None and acc is not "":
-            print(acc)
-    """
+        file "download.txt" into acc_to_download_f
+script:
+if (params.debug == false)
+"""
+#!/usr/bin/env python
+current_version = {
+    l.strip()
+    for l in open("${current_records_f}")
 }
-acc_to_download_out
-    .splitText()
-    .map{ r-> r.strip()}
-    .filter{ s -> !s.isEmpty()}
-    .first()
-    .set { acc_to_download_ch }
+archaea_ver = {
+    l.strip()
+    for l in open("${acc_archaea_f}", 'rt')
+}
+bacteria_ver = {
+    l.strip()
+    for l in open("${acc_bacteria_f}", 'rt')
+}
+type_ver = {
+    l.strip()
+    for l in open("${acc_types_f}", 'rt')
+}
+new_versions = archaea_ver.union(bacteria_ver).union(type_ver) - current_version
+with open('download.txt', 'wt') as out_h:
+    for acc in new_versions:
+        out_h.write(acc+"\\n")
+"""
+else
+"""
+#!/usr/bin/env python
+current_version = {
+    l.strip()
+    for l in open("${current_records_f}")
+}
+archaea_ver = {
+    l.strip()
+    for l in open("${acc_archaea_f}", 'rt')
+}
+bacteria_ver = {
+    l.strip()
+    for l in open("${acc_bacteria_f}", 'rt')
+}
+type_ver = {
+    l.strip()
+    for l in open("${acc_types_f}", 'rt')
+}
+new_versions = archaea_ver.union(bacteria_ver).union(type_ver) - current_version
+new_versions = set(list(new_versions)[0:5])
+with open('download.txt', 'wt') as out_h:
+    for acc in new_versions:
+        out_h.write(acc+"\\n")
+"""
+}
 
-// Step 2. For each new accession, collect a feature table
+
+// Step 3. For each new accession, find the 16S rRNA features
 
 process get16SrRNA_feat {
-    container 'golob/medirect:0.14.0__bcw.0.3.1A'
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     //errorStrategy 'retry'
-    maxForks 1
 
     input:
-        val id from acc_to_download_ch
+        file acc_to_download_f
 
     output:
-        stdout into ft_16srRNA_out
+        file "new_16s_rrna_feat.csv" into new_16s_rRNA_feat_f
 
+    script:
+    if (params.api_key == false)
     """
     set -e
 
     mefetch -proc ${task.cpus} -max-retry ${params.retry_max} -retry ${params.retry_delay} \
-    --email ${params.email} -db nucleotide -mode text -format ft -id ${id} |
-    ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue -out /dev/stdout
+    --email ${params.email} -db nucleotide -mode text -format ft -id ${acc_to_download_f} |
+    ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue \
+    -out new_16s_rrna_feat.csv
     """
-}
-
-ft_16srRNA_out
-    .splitCsv(header: true)
-    .map{ r->
-        return [r.id, r.seq_start, r.seq_stop, r.strand, (r.id =~ /gb\|(\w+)\.\d+\|/).group(0)]
-    }
-    .set{ rRNA16s_for_dl_ch }
-
-rRNA16s_for_dl_ch.println()
-
-/*
-// Step 3: Download genbank
-process get16SrRNA {
-    container 'golob/medirect:0.14.0__bcw.0.3.1A'
-    label 'io_limited'
-    //errorStrategy 'retry'
-    maxForks 1
-
-    input:
-        val id, val seq_start, val seq_stop, val strand from rRNA16s_for_dl_ch
-    
-    output:
-        val id, val seq_start, val seq_stop, val strand, file ("${}") into rRNA16s_dl_ch
-
-
+    else
     """
     set -e
 
-    echo id,seq_start,seq_stop,strand
-    echo ${id},${seq_start},${seq_stop},${strand}
-    """
+    mefetch -proc ${task.cpus} -max-retry ${params.retry_max} -retry ${params.retry_delay} \
+    --email ${params.email} -api-key ${params.api_key} -db nucleotide -mode text \
+    -format ft -id ${acc_to_download_f} |
+    ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue \
+    -out new_16s_rrna_feat.csv
+    """   
+}
 
+// Step 4: Download the new 16S rRNA features into genbank format and extract directly
+today = new Date().format('dd-MMM-yyyy')
+
+process get16SrRNA_gb {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label 'io_limited'
+    //errorStrategy 'retry'
+
+
+    input:
+        file new_16s_rRNA_feat_f
+        val today
+    
+    output:
+        file "seqs.fasta" into new_16s_seqs_fasta_f
+        file "seq_info.csv" into new_16s_si_f
+        file "pubmed_info.csv" into new_16s_pubmed_f
+        file "references.csv" into new_16s_refs_f
+        file "refseq_info.csv" into new_16s_refseqinfo_f
+
+    script:
+    if (params.api_key == false)
+    """
+    set -e
+
+    mefetch -proc ${task.cpus} -max-retry ${params.retry_max} -retry ${params.retry_delay} \
+    --email ${params.email} -db nucleotide -mode text \
+    -csv -format gbwithparts -id ${new_16s_rRNA_feat_f} |
+    extract_genbank ${today} \
+    seqs.fasta \
+    seq_info.csv \
+    pubmed_info.csv \
+    references.csv \
+    refseq_info.csv
+    """
+    else
+    """
+    set -e
+
+    mefetch -proc ${task.cpus} -max-retry ${params.retry_max} -retry ${params.retry_delay} \
+    --email ${params.email} --api-key ${params.api_key} -db nucleotide -mode text \
+    -csv -format gbwithparts -id ${new_16s_rRNA_feat_f} |
+    extract_genbank ${today} \
+    seqs.fasta \
+    seq_info.csv \
+    pubmed_info.csv \
+    references.csv \
+    refseq_info.csv
+    """
 }
 
 /*
