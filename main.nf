@@ -208,17 +208,45 @@ process retrieveAcc_types {
 
 // Step 2. Use set adventures to figure out the records we have not looked at
 // Can also include here masked records to remove (known empty, etc)
-current_records_f = file "${params.repo}/records.txt"
+process combineCurrentAccessions {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label 'io_limited'
+    input:
+        file acc_types_f
+        file acc_archaea_f
+        file acc_bacteria_f
+    output:
+        file "records.current.txt" into records_current_f
+"""
+#!/usr/bin/env python
+archaea_ver = {
+    l.strip()
+    for l in open("${acc_archaea_f}", 'rt')
+}
+bacteria_ver = {
+    l.strip()
+    for l in open("${acc_bacteria_f}", 'rt')
+}
+type_ver = {
+    l.strip()
+    for l in open("${acc_types_f}", 'rt')
+}
+with open('records.current.txt', 'wt') as out_h:
+    for acc in archaea_ver.union(bacteria_ver).union(type_ver):
+        out_h.write(acc+"\\n")
+"""    
+
+
+}
+records_previous_f = file "${params.repo}/records.txt"
 process accessionsToDownload {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     //errorStrategy 'retry'
 
     input:
-        file acc_types_f
-        file acc_archaea_f
-        file acc_bacteria_f
-        file current_records_f
+        file records_current_f
+        file records_previous_f
 
     output:
         file "download.txt" into acc_to_download_f
@@ -228,21 +256,13 @@ if (params.debug == false)
 #!/usr/bin/env python
 current_version = {
     l.strip()
-    for l in open("${current_records_f}")
+    for l in open("${records_current_f}")
 }
-archaea_ver = {
+prior_version = {
     l.strip()
-    for l in open("${acc_archaea_f}", 'rt')
+    for l in open("${records_previous_f}")
 }
-bacteria_ver = {
-    l.strip()
-    for l in open("${acc_bacteria_f}", 'rt')
-}
-type_ver = {
-    l.strip()
-    for l in open("${acc_types_f}", 'rt')
-}
-new_versions = archaea_ver.union(bacteria_ver).union(type_ver) - current_version
+new_versions = current_version - prior_version
 with open('download.txt', 'wt') as out_h:
     for acc in new_versions:
         out_h.write(acc+"\\n")
@@ -252,22 +272,13 @@ else
 #!/usr/bin/env python
 current_version = {
     l.strip()
-    for l in open("${current_records_f}")
+    for l in open("${records_current_f}")
 }
-archaea_ver = {
+prior_version = {
     l.strip()
-    for l in open("${acc_archaea_f}", 'rt')
+    for l in open("${records_previous_f}")
 }
-bacteria_ver = {
-    l.strip()
-    for l in open("${acc_bacteria_f}", 'rt')
-}
-type_ver = {
-    l.strip()
-    for l in open("${acc_types_f}", 'rt')
-}
-new_versions = archaea_ver.union(bacteria_ver).union(type_ver) - current_version
-new_versions = set(list(new_versions)[0:5])
+new_versions = list(current_version - prior_version)[0:10]
 with open('download.txt', 'wt') as out_h:
     for acc in new_versions:
         out_h.write(acc+"\\n")
@@ -361,7 +372,86 @@ process get16SrRNA_gb {
     """
 }
 
-// Align against RDP type strains with vsearch to validate
+// Step 5: Align against RDP type strains with vsearch to validate
+process vsearch_rdp_validate {
+    container 'golob/ya16sdb:0.2A'
+    label 'mem_veryhigh'
+    //errorStrategy 'retry'
+
+
+    input:
+        file new_16s_seqs_fasta_f
+        file new_16s_si_f
+        
+    
+    output:
+        file "vsearch/seqs.fasta" into vsearch_seqs_f
+        file "vsearch/seq_info.csv" into vsearch_si_f
+        file "vsearch/unknown.fasta" into vsearch_unknown_fasta_f
+        file "vsearch/unknown.txt" into vsearch_unknown_txt_f
+
+    script:
+    """
+    set -e
+
+    vsearch --threads ${task.cpus} \
+    --db /db/rdp_16s_type_strains.fasta.gz \
+    --id 0.70 --iddef 2 --mincols 350 --query_cov 0.70 --strand both  \
+    --maxaccepts 1 --maxrejects 32 --top_hits_only \
+    --output_no_hits --userfields query+target+qstrand+id+tilo+tihi \
+    --usearch_global ${new_16s_seqs_fasta_f} \
+    --userout vsearch.tsv
+    touch unknowns.txt
+    mkdir -p vsearch
+    vsearch.py vsearch.tsv ${new_16s_seqs_fasta_f} ${new_16s_si_f} unknowns.txt \
+    vsearch/seqs.fasta vsearch/seq_info.csv vsearch/unknown.fasta vsearch/unknown.txt
+    """
+}
+
+// MAYBE? Check tax IDs in seq_info using taxtastic
+
+
+// Step 6: Refresh the repo seqs!
+prior_seqs_f = file "${params.repo}/seqs.fasta"
+prior_si_f = file "${params.repo}/seq_info.csv"
+process refreshRecords {
+    container 'golob/ya16sdb:0.2A'
+    label 'io_mem'
+    //errorStrategy 'retry'
+
+    input:
+        file new_16s_seqs_fasta_f
+        file new_16s_si_f
+        file records_current_f
+        file records_previous_f
+        file prior_seqs_f
+        file prior_si_f
+        
+    
+    output:
+        file "vsearch/seqs.fasta" into vsearch_seqs_f
+        file "vsearch/seq_info.csv" into vsearch_si_f
+        file "vsearch/unknown.fasta" into vsearch_unknown_fasta_f
+        file "vsearch/unknown.txt" into vsearch_unknown_txt_f
+
+    script:
+    """
+    set -e
+
+    refresh.py \
+    ${records_current_f} \
+    ${new_16s_seqs_fasta_f} \
+
+
+    """
+}
+
+
+
+
+
+
+//
 
 // Check the annotated tax ids, to be sure they are not nonsense
 
