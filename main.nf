@@ -52,11 +52,12 @@ params.email = false
 params.ncbi_concurrent_connections = 3
 params.retry_max = 1
 params.retry_delay = 60000
+params.min_len = 500
 
 //params.rRNA16S_bact_search = "16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"
-params.rRNA16S_bact_search = '16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date]) AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])'
+params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 //params.rRNA16S_arch_search = "16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"
-params.rRNA16S_arch_search = '16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/30"[Publication Date]) AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])'
+params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/30"[Publication Date]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 
 
 // Function which prints help message text
@@ -179,7 +180,7 @@ process retrieveAccBacteria {
     """
 }
 
-current_SI_f = file "${params.repo}/seq_info.csv"
+current_records_f = file "${params.repo}/records.txt"
 process getNewAccessions {
     container 'golob/medirect:0.14.0__bcw.0.3.1A'
     label 'io_limited'
@@ -188,7 +189,7 @@ process getNewAccessions {
     input:
         file acc_archaea_f
         file acc_bacteria_f
-        file current_SI_f
+        file current_records_f
 
     output:
         stdout into acc_to_download_out
@@ -198,11 +199,8 @@ process getNewAccessions {
     import csv
 
     current_version = {
-        r.get('version').strip()
-        for r in 
-        csv.DictReader(
-            open("${current_SI_f}", 'rt')
-        )
+        l.strip()
+        for l in open("${current_records_f}")
     }
     
     archaea_ver = {
@@ -219,8 +217,6 @@ process getNewAccessions {
             print(acc)
     """
 }
-
-// For each new accession, collect a feature table
 acc_to_download_out
     .splitText()
     .map{ r-> r.strip()}
@@ -228,23 +224,63 @@ acc_to_download_out
     .first()
     .set { acc_to_download_ch }
 
-acc_to_download_ch.println()
+// Step 2. For each new accession, collect a feature table
 
-// Step 2: Collect all the extant seq ids
+process get16SrRNA_feat {
+    container 'golob/medirect:0.14.0__bcw.0.3.1A'
+    label 'io_limited'
+    //errorStrategy 'retry'
+    maxForks 1
+
+    input:
+        val id from acc_to_download_ch
+
+    output:
+        stdout into ft_16srRNA_out
+
+    """
+    set -e
+
+    mefetch -proc ${task.cpus} -max-retry ${params.retry_max} -retry ${params.retry_delay} \
+    --email ${params.email} -db nucleotide -mode text -format ft -id ${id} |
+    ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue -out /dev/stdout
+    """
+}
+
+ft_16srRNA_out
+    .splitCsv(header: true)
+    .map{ r->
+        return [r.id, r.seq_start, r.seq_stop, r.strand, (r.id =~ /gb\|(\w+)\.\d+\|/).group(0)]
+    }
+    .set{ rRNA16s_for_dl_ch }
+
+rRNA16s_for_dl_ch.println()
+
 /*
-// make a channel
-Channel.from(file("${params.repo}/seq_info.csv"))
-    .splitCsv(header: true, sep: ",")
-    .set { si_for_currentVersions_ch }
+// Step 3: Download genbank
+process get16SrRNA {
+    container 'golob/medirect:0.14.0__bcw.0.3.1A'
+    label 'io_limited'
+    //errorStrategy 'retry'
+    maxForks 1
 
-log.info"Reading in existing versions in the repo"
-// Reduce into a list of current version
-si_for_currentVersions_ch
-    .reduce([] as Set) {
-        p, c -> p.leftShift(c.version);
-        return p;
-    }.set{ currentVersions }
+    input:
+        val id, val seq_start, val seq_stop, val strand from rRNA16s_for_dl_ch
+    
+    output:
+        val id, val seq_start, val seq_stop, val strand, file ("${}") into rRNA16s_dl_ch
 
+
+    """
+    set -e
+
+    echo id,seq_start,seq_stop,strand
+    echo ${id},${seq_start},${seq_stop},${strand}
+    """
+
+}
+
+/*
 
 
 // */
