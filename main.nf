@@ -56,10 +56,8 @@ params.min_len = 500
 params.api_key = false
 params.debug = false
 
-//params.rRNA16S_bact_search = "16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"
-params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
-//params.rRNA16S_arch_search = "16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND 500 : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"
-params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ("2019/06/01"[Publication Date] : "2019/06/30"[Publication Date]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
+params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
+params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
 
 // Function which prints help message text
@@ -362,6 +360,13 @@ process get16SrRNA_gb {
     refseq_info.csv
     """
 }
+
+// Align against RDP type strains with vsearch to validate
+
+// Check the annotated tax ids, to be sure they are not nonsense
+
+// Deduplicate
+
 
 /*
 
