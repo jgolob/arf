@@ -56,7 +56,13 @@ params.min_len = 500
 params.api_key = false
 params.debug = false
 
-params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
+if (params.debug == true){
+    params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
+}
+else {
+    params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
+
+}
 params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
 
@@ -143,7 +149,12 @@ if (params.help || paramInvalid()){
 // Step 0: Load in prior files from the repo
 prior_seqs_f = file "${params.repo}/seqs.fasta"
 prior_si_f = file "${params.repo}/seq_info.csv"
-records_previous_f = file "${params.repo}/records.txt"
+prior_records_f = file "${params.repo}/records.txt"
+prior_unknowns_f = file "${params.repo}/unknowns.txt"
+prior_pubmed_f = file "${params.repo}/pubmed_info.csv"
+prior_refseq_info_f = file "${params.repo}/refseq_info.csv"
+prior_references_f = file "${params.repo}/references.csv"
+prior_refseqinfo_f = file "${params.repo}/refseq_info.csv"
 
 // Step 1: Retrieve current accessions with a 16S rRNA
 // Archaea
@@ -251,7 +262,7 @@ process accessionsToDownload {
 
     input:
         file records_current_f
-        file records_previous_f
+        file prior_records_f
 
     output:
         file "download.txt" into acc_to_download_f
@@ -265,7 +276,7 @@ current_version = {
 }
 prior_version = {
     l.strip()
-    for l in open("${records_previous_f}")
+    for l in open("${prior_records_f}")
 }
 new_versions = current_version - prior_version
 with open('download.txt', 'wt') as out_h:
@@ -281,7 +292,7 @@ current_version = {
 }
 prior_version = {
     l.strip()
-    for l in open("${records_previous_f}")
+    for l in open("${prior_records_f}")
 }
 new_versions = list(current_version - prior_version)[0:10]
 with open('download.txt', 'wt') as out_h:
@@ -379,24 +390,26 @@ process get16SrRNA_gb {
 
 // Step 5: Align against RDP type strains with vsearch to validate
 process vsearch_rdp_validate {
-    container 'golob/ya16sdb:0.2A'
+    container 'golob/ya16sdb:0.2B'
     label 'mem_veryhigh'
     //errorStrategy 'retry'
 
     input:
         file new_16s_seqs_fasta_f
         file new_16s_si_f
+        file prior_unknowns_f
         
     
     output:
         file "vsearch/seqs.fasta" into vsearch_seqs_f
         file "vsearch/seq_info.csv" into vsearch_si_f
         file "vsearch/unknown.fasta" into vsearch_unknown_fasta_f
-        file "vsearch/unknown.txt" into vsearch_unknown_txt_f
+        file "vsearch/unknowns.txt" into vsearch_unknowns_txt_f
 
     script:
     """
     set -e
+    touch ${prior_unknowns_f}
 
     vsearch --threads ${task.cpus} \
     --db /db/rdp_16s_type_strains.fasta.gz \
@@ -405,56 +418,152 @@ process vsearch_rdp_validate {
     --output_no_hits --userfields query+target+qstrand+id+tilo+tihi \
     --usearch_global ${new_16s_seqs_fasta_f} \
     --userout vsearch.tsv
-    touch unknowns.txt
     mkdir -p vsearch
-    vsearch.py vsearch.tsv ${new_16s_seqs_fasta_f} ${new_16s_si_f} unknowns.txt \
-    vsearch/seqs.fasta vsearch/seq_info.csv vsearch/unknown.fasta vsearch/unknown.txt
+    vsearch.py vsearch.tsv ${new_16s_seqs_fasta_f} ${new_16s_si_f} ${prior_unknowns_f} \
+    vsearch/seqs.fasta vsearch/seq_info.csv vsearch/unknown.fasta vsearch/unknowns.txt
     """
 }
 
-// MAYBE? Check tax IDs in seq_info using taxtastic
+// Step 6: Build taxonomy DB Check tax IDs in seq_info using taxtastic
+process DlBuildTaxtasticDB {
+    container = 'golob/ya16sdb:0.2B'
+    label = 'io_limited'
+    // errorStrategy = 'retry'
+
+    output:
+        file "taxonomy.db" into taxonomy_db_f
+
+    afterScript "rm -rf dl/"
+
+    """
+    mkdir -p dl/ && \
+    taxit new_database taxonomy.db -u ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip -p dl/
+    """
+}
+
+process filterUnknownTaxa {
+    container = 'golob/ya16sdb:0.2B'
+    label = 'io_limited'
+    // errorStrategy = 'retry'
+
+    input:
+        file taxonomy_db_f
+        file vsearch_si_f
+    
+    output:
+        file "filtered/seq_info.csv" into new_filtered_si_f
+
+    """
+    mkdir -p filtered/
+    taxit update_taxids \
+    --unknown-action drop --outfile filtered/seq_info.csv \
+    ${vsearch_si_f} ${taxonomy_db_f}
+    """
+}
 
 
-// Step 6: Refresh the repo seqs!
+// Step 7: Refresh the repo seqs!
 
 process refreshRecords {
-    container 'golob/ya16sdb:0.2A'
+    container 'golob/ya16sdb:0.2B'
     label 'io_mem'
     //errorStrategy 'retry'
 
     input:
-        file new_16s_seqs_fasta_f
-        file new_16s_si_f
-        file records_current_f
-        file records_previous_f
-        file prior_seqs_f
-        file prior_si_f
-        
-    
+        file "new/records.txt" from records_current_f
+        file "new/seqs.fasta" from vsearch_seqs_f
+        file "prior/seqs.fasta" from prior_seqs_f
+        file "new/seq_info.csv" from new_filtered_si_f
+        file "prior/seq_info.csv" from prior_si_f
+        file "new/pubmed_info.csv" from new_16s_pubmed_f
+        file "prior/pubmed_info.csv" from prior_pubmed_f
+        file "new/references.csv" from new_16s_refs_f
+        file "prior/references.csv" from prior_references_f
+        file "new/refseq_info.csv" from new_16s_refseqinfo_f
+        file "prior/refseq_info.csv" from prior_refseqinfo_f
+        file vsearch_unknowns_txt_f
+        file "prior/records.txt" from prior_records_f
+
     output:
-        file "vsearch/seqs.fasta" into vsearch_seqs_f
-        file "vsearch/seq_info.csv" into vsearch_si_f
-        file "vsearch/unknown.fasta" into vsearch_unknown_fasta_f
-        file "vsearch/unknown.txt" into vsearch_unknown_txt_f
+        file "refresh/seqs.fasta" into refresh_seqs_f
+        file "refresh/seq_info.csv" into refresh_si_f
+        file "refresh/pubmed_info.csv" into refresh_pubmed_f
+        file "refresh/references.csv" into refresh_references_f
+        file "refresh/refseq_info.csv" into refresh_refseqinfo_f
+        file "refresh/records.txt" into refresh_records_f
 
     script:
     """
     set -e
 
+    touch prior/seqs.fasta
+    touch prior/seq_info.csv
+    touch prior/pubmed_info.csv
+    touch prior/references.csv
+    touch prior/refseq_info.csv
+    touch prior/records.txt
+    mkdir -p refresh/
+
     refresh.py \
-    ${records_current_f} \
-    ${new_16s_seqs_fasta_f} \
-
-
+    new/records.txt \
+    new/seqs.fasta prior/seqs.fasta \
+    new/seq_info.csv prior/seq_info.csv \
+    new/pubmed_info.csv prior/pubmed_info.csv \
+    new/references.csv prior/references.csv \
+    new/refseq_info.csv prior/refseq_info.csv \
+    ${vsearch_unknowns_txt_f} prior/records.txt \
+    refresh/seqs.fasta \
+    refresh/seq_info.csv \
+    refresh/pubmed_info.csv \
+    refresh/references.csv \
+    refresh/refseq_info.csv \
+    refresh/records.txt
     """
 }
 
+// Step 8: Make a (mothur-style) taxonomy table of the refreshed reads
+process taxonomyTable_refresh {
+    container 'golob/ya16sdb:0.2B'
+    label 'io_mem'
 
+    input:
+        file taxonomy_db_f
+        file refresh_si_f
+    
+    output:
+        file "taxonomy.csv" into refresh_taxonomy_table_f
+    
+    """
+    taxit -v taxtable --seq-info ${refresh_si_f} --out taxonomy.csv ${taxonomy_db_f}
+    """
+}
 
+// Step 9: Make a feather file to help sort items around
+process feather_refresh {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
 
+    input:
+        file refresh_si_f
+        file refresh_taxonomy_table_f
+        file acc_types_f
+        file refresh_pubmed_f
+        file refresh_refseqinfo_f
+        file taxonomy_db_f
 
+    output:
+        file "seq_info.feather" into refresh_feather_si
 
-//
+    """
+    to_feather.py ${refresh_si_f} seq_info.feather
+    taxonomy.py seq_info.feather ${refresh_taxonomy_table_f}
+    is_type.py seq_info.feather ${acc_types_f}
+    is_published.py seq_info.feather ${refresh_pubmed_f}
+    is_refseq.py seq_info.feather ${refresh_refseqinfo_f}
+    is_valid.py seq_info.feather ${taxonomy_db_f}
+    confidence.py seq_info.feather
+    """
+}
 
 // Check the annotated tax ids, to be sure they are not nonsense
 

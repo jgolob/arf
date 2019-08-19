@@ -1,4 +1,4 @@
-# golob/ya16sdb:0.2
+# golob/ya16sdb:0.2C
 
 FROM      ubuntu:18.04
 
@@ -19,7 +19,8 @@ RUN pip3 install \
         numpy>=1.14.2 \
         bucket_command_wrapper==0.3.1 \
         biopython>=1.68 \
-        Cython
+        Cython \
+        taxtastic
 
 RUN mkdir -p /fh && mkdir -p /app && mkdir -p /src
 RUN mkdir -p /mnt/inputs/file && mkdir -p /mnt/outputs/file && mkdir /scratch
