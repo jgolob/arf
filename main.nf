@@ -539,7 +539,7 @@ process taxonomyTable_refresh {
 }
 
 // Step 9: Make a feather file to help sort items around
-process feather_refresh {
+process buildFeatherSI {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
 
