@@ -140,6 +140,11 @@ if (params.help || paramInvalid()){
     exit 0
 }
 
+// Step 0: Load in prior files from the repo
+prior_seqs_f = file "${params.repo}/seqs.fasta"
+prior_si_f = file "${params.repo}/seq_info.csv"
+records_previous_f = file "${params.repo}/records.txt"
+
 // Step 1: Retrieve current accessions with a 16S rRNA
 // Archaea
 process retrieveAcc_archaea {
@@ -238,7 +243,7 @@ with open('records.current.txt', 'wt') as out_h:
 
 
 }
-records_previous_f = file "${params.repo}/records.txt"
+
 process accessionsToDownload {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
@@ -378,7 +383,6 @@ process vsearch_rdp_validate {
     label 'mem_veryhigh'
     //errorStrategy 'retry'
 
-
     input:
         file new_16s_seqs_fasta_f
         file new_16s_si_f
@@ -412,8 +416,7 @@ process vsearch_rdp_validate {
 
 
 // Step 6: Refresh the repo seqs!
-prior_seqs_f = file "${params.repo}/seqs.fasta"
-prior_si_f = file "${params.repo}/seq_info.csv"
+
 process refreshRecords {
     container 'golob/ya16sdb:0.2A'
     label 'io_mem'
