@@ -40,10 +40,14 @@ rm -r /src/*
 
 ADD requirements.txt /src/
 RUN pip3 install -r /src/requirements.txt && rm -r /src/*
-ADD bin/* /usr/local/bin/
-RUN chmod +x /usr/local/bin/
+
 RUN mkdir -p /db/
 ADD data/rdp_16s_type_strains.fasta.bz2 /db/
 RUN cd /db/ && bunzip2 rdp_16s_type_strains.fasta.bz2 -c > gzip > rdp_16s_type_strains.fasta.gz
+
+ADD bin/* /usr/local/bin/
+RUN chmod +x /usr/local/bin/
+
+
 
 WORKDIR /working

@@ -4,7 +4,6 @@ output all valid tax_ids in database
 """
 
 import argparse
-import configparser
 import pandas
 import sqlalchemy
 
@@ -20,10 +19,7 @@ def main():
         help='Database string URI or filename.')
     args = p.parse_args()
     info = pandas.read_feather(args.feather)
-    conf = configparser.SafeConfigParser(allow_no_value=True)
-    conf.optionxform = str  # options are case-sensitive
-    conf.read(args.url)
-    url = conf.get('sqlalchemy', 'url')
+    url = args.url
     engine = sqlalchemy.create_engine(url)
     conn = engine.connect()
     meta = sqlalchemy.MetaData(engine, reflect=True)

@@ -390,7 +390,7 @@ process get16SrRNA_gb {
 
 // Step 5: Align against RDP type strains with vsearch to validate
 process vsearch_rdp_validate {
-    container 'golob/ya16sdb:0.2B'
+    container 'golob/ya16sdb:0.2C'
     label 'mem_veryhigh'
     //errorStrategy 'retry'
 
@@ -442,7 +442,7 @@ process DlBuildTaxtasticDB {
 }
 
 process filterUnknownTaxa {
-    container = 'golob/ya16sdb:0.2B'
+    container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
     // errorStrategy = 'retry'
 
@@ -465,7 +465,7 @@ process filterUnknownTaxa {
 // Step 7: Refresh the repo seqs!
 
 process refreshRecords {
-    container 'golob/ya16sdb:0.2B'
+    container 'golob/ya16sdb:0.2C'
     label 'io_mem'
     //errorStrategy 'retry'
 
@@ -523,7 +523,7 @@ process refreshRecords {
 
 // Step 8: Make a (mothur-style) taxonomy table of the refreshed reads
 process taxonomyTable_refresh {
-    container 'golob/ya16sdb:0.2B'
+    container 'golob/ya16sdb:0.2C'
     label 'io_mem'
 
     input:
@@ -544,6 +544,7 @@ process feather_refresh {
     label 'io_mem'
 
     input:
+        file refresh_seqs_f
         file refresh_si_f
         file refresh_taxonomy_table_f
         file acc_types_f
@@ -560,15 +561,12 @@ process feather_refresh {
     is_type.py seq_info.feather ${acc_types_f}
     is_published.py seq_info.feather ${refresh_pubmed_f}
     is_refseq.py seq_info.feather ${refresh_refseqinfo_f}
-    is_valid.py seq_info.feather ${taxonomy_db_f}
+    is_valid.py seq_info.feather sqlite:///${taxonomy_db_f}
     confidence.py seq_info.feather
+    seqhash.py seq_info.feather ${refresh_seqs_f}
+    sort_values.py seq_info.feather "is_type,is_published,is_refseq,ambig_count,modified_date,download_date,seqhash"
     """
 }
-
-// Check the annotated tax ids, to be sure they are not nonsense
-
-// Deduplicate
-
 
 /*
 

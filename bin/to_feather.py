@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 Create a seq_info.csv feather file optionally gzipped
 """
