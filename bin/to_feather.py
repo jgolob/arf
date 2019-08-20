@@ -41,7 +41,7 @@ def main(arguments):
         args.seq_info,
         dtype=DTYPES,
         parse_dates=['download_date', 'modified_date'],
-        date_parser=lambda x: pandas.datetime.strptime(x, '%d-%b-%Y'))
+        date_parser=pandas.to_datetime)
     seq_info.to_feather(args.out)
 
 

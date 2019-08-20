@@ -8,6 +8,7 @@ python3-dev \
 python3-pip \
 postgresql \
 wget \
+git \
 && apt-get clean \
 && apt-get purge \
 && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
