@@ -60,16 +60,20 @@ params.debug = false
 // maximum number of 16S rRNA to return for a given species
 params.species_cap = 5000
 
+params.min_seqs_for_filtering = 5
+
+
 if (params.debug == true){
     params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
+    params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
+    params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
+
 }
 else {
     params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
-
+    params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
+    params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter]"""
 }
-//params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
-params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
-params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
 
 // Function which prints help message text
 def helpMessage() {
@@ -160,6 +164,7 @@ prior_pubmed_f = file "${params.repo}/pubmed_info.csv"
 prior_refseq_info_f = file "${params.repo}/refseq_info.csv"
 prior_references_f = file "${params.repo}/references.csv"
 prior_refseqinfo_f = file "${params.repo}/refseq_info.csv"
+prior_outliers_f = file "${params.repo}/dedup/1200bp/named/filtered/outliers.csv"
 
 // Step 1: Retrieve current accessions with a 16S rRNA
 // Archaea
@@ -237,7 +242,7 @@ process combineCurrentAccessions {
         file acc_archaea_f
         file acc_bacteria_f
     output:
-        file "records.current.txt" into records_current_f
+        file "records.current.txt" into records_dl_f
 """
 #!/usr/bin/env python
 archaea_ver = {
@@ -267,7 +272,7 @@ process accessionsToDownload {
     cache 'deep'
 
     input:
-        file records_current_f
+        file records_dl_f
         file prior_records_f
 
     output:
@@ -278,7 +283,7 @@ if (params.debug == false)
 #!/usr/bin/env python
 current_version = {
     l.strip()
-    for l in open("${records_current_f}")
+    for l in open("${records_dl_f}")
 }
 prior_version = {
     l.strip()
@@ -294,13 +299,13 @@ else
 #!/usr/bin/env python
 current_version = {
     l.strip()
-    for l in open("${records_current_f}")
+    for l in open("${records_dl_f}")
 }
 prior_version = {
     l.strip()
     for l in open("${prior_records_f}")
 }
-new_versions = sorted(current_version - prior_version)[0:10]
+new_versions = sorted(current_version - prior_version)[0:1000]
 with open('download.txt', 'wt') as out_h:
     for acc in new_versions:
         out_h.write(acc+"\\n")
@@ -486,6 +491,35 @@ process filterUnknownTaxa {
 
 // Step 7: Refresh the repo seqs!
 
+// A bit of fakery for debug
+if (args.debug != false) {
+process debug_records {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_limited'
+    cache 'deep'
+    
+    input:
+        file "prior_records.txt" from prior_records_f
+        file "current_records.txt" from records_dl_f
+    output:
+        file 'records.txt' into records_current_f
+"""
+#!/usr/bin/env python3
+
+n = 0
+with open('records.txt', 'wt') as out_h:
+    for l in open('current_records.txt', 'rt'):
+        out_h.write(l.strip()+'\\n')
+    for l in open('prior_records.txt', 'rt'):
+        out_h.write(l.strip()+'\\n')
+        n += 1
+        if n > 1000:
+            break
+"""
+}} else {
+    records_current_f = records_dl_f
+}
+
 process refreshRecords {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
@@ -510,7 +544,7 @@ process refreshRecords {
 
     output:
         file "seqs.fasta" into refresh_seqs_f
-        file "seq_info.csv" into refresh_si_f
+        file "seq_info.csv" into refresh_si_unverified_f
         file "pubmed_info.csv" into refresh_pubmed_f
         file "references.csv" into refresh_references_f
         file "refseq_info.csv" into refresh_refseqinfo_f
@@ -545,7 +579,25 @@ process refreshRecords {
     """
 }
 
-// Step 8: Make a (mothur-style) taxonomy table of the refreshed reads
+// Step 8: Verify the refreshed tax ID and make a taxtable
+process refresh_verifyTaxIds {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
+
+    input:
+        file taxonomy_db_f
+        file "unverified_si.csv" from refresh_si_unverified_f
+    
+    output:
+        file "seq_info.csv" into refresh_si_f
+    
+    """
+    taxit update_taxids \
+    --unknown-action drop --outfile seq_info.csv \
+    unverified_si.csv ${taxonomy_db_f}
+    """
+}
+
 process taxonomyTable_refresh {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
@@ -612,7 +664,7 @@ process refresh_dd1200bp {
 
     """
     set -e
-    mkdir -p partition
+
     partition_refs.py \
     --drop-duplicate-sequences \
     --min-length 1200 \
@@ -700,8 +752,216 @@ process refresh_named {
 }
 
 // Group the named seqs by annotated tax id to create a channel
+process groupNamedByTaxa {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_limited'
+
+    input:
+        file refresh_dd1200_named_si_f
+    
+    output:
+        stdout into named_tax_groups_out
+
+    """
+    set -e
+
+    csvcut.py --columns seqname,tax_id --out /dev/stdout ${refresh_dd1200_named_si_f}
+    """
+}
+// convert the stdout into a channel
+named_tax_groups_out
+    .splitCsv(header: true)
+    .map{r-> [r.tax_id, r.seqname]}
+    .groupTuple()
+    .set { named_tax_group_map }
+
+// Load in the prior outliers.csv
+Channel.from(prior_outliers_f)
+    .splitCsv(header: true)
+    .map { r -> [
+        r.seqname,
+        r.tax_id,
+        r.centroid,
+        r.dist,
+        r.is_out,
+        r.species,
+        r.x,
+        r.y
+    ]}
+    .tap { prior_outliers_ch }
+    .map { r -> [
+        r[1],   // tax_id
+        r[0]    // seqname
+    ]}
+    .groupTuple()
+    .set {
+        prior_outliers_map
+    }
+
+// Use the prior outliers map to see what changed....
+named_tax_group_map.join(prior_outliers_map, remainder: true)
+    .filter { r -> r[1] != null}
+    .into {
+        tax_group_changed_ch;
+        tax_group_unchanged_ch;
+    }
+tax_group_changed_ch
+    .filter { r -> r[1] != r[2]}
+    .map{ r -> [r[0], r[1]] }
+    .set { 
+        tax_group_changed_ch
+    }
+tax_group_unchanged_ch
+    .filter { r -> r[1] == r[2]}
+    .map{ r -> r[1] }
+    .flatten()
+    .set { 
+        seqname_unchanged_ch
+    }
+
+// Of the changed, separate into 'rare' taxa (less than min reps for filtering) and non-rare
+tax_group_changed_ch
+    .into{
+        tax_group_changed_rare_ch;
+        tax_group_changed_tofilter_ch
+    }
+// for the changed rare we want to ungroup into seqname, tax_id tuples
+tax_group_changed_rare_ch
+    .filter {
+        r -> r[1].size() < params.min_seqs_for_filtering
+    }
+    .flatMap{
+            r -> 
+            fl = [];
+            r[1].eachWithIndex{ 
+                it, i ->  fl.add([
+                    r[1][i], // seqname
+                    r[0]
+                ])
+            }
+            return fl;
+    }
+    .toSortedList({a, b -> a[0] <=> b[0]})
+    .flatMap()
+    .set {
+        seqname_changed_rare_ch
+    }
+
+tax_group_changed_tofilter_ch
+    .filter {
+        r -> r[1].size() >= params.min_seqs_for_filtering
+    }
+    .set {
+        tax_group_changed_tofilter_ch
+    }    
+
+
+
+
+// Use this channel to subset out the named seqs and si
+process taxonGroupFiles {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_limited'
+
+    input:
+        set tax_id, seq_names from tax_group_changed_tofilter_ch
+        file refresh_dd1200_named_seqs_f
+    
+    output:
+        set file('taxon_seqs.fasta'), file('taxon_seq_info.csv') into taxon_group_files_ch
+
+"""
+#!/usr/bin/env python3
+from Bio import SeqIO
+import csv
+
+seq_names = {
+    sn.strip() for sn in
+    "${seq_names}".replace("[", "").replace("]", "").split(",")
+}
+num_seqs_out = 0
+with open('taxon_seqs.fasta', 'wt') as seqs_out_h:
+    for sr in SeqIO.parse(open('${refresh_dd1200_named_seqs_f}', 'rt'), 'fasta'):
+        if sr.id in seq_names:
+            SeqIO.write(sr, seqs_out_h, 'fasta')
+            num_seqs_out += 1
+assert (len(seq_names) == num_seqs_out)
+with open('taxon_seq_info.csv', 'wt') as taxon_si_h:
+    writer = csv.writer(taxon_si_h)
+    writer.writerow(['seqname', 'tax_id'])
+    for sn in seq_names:
+        writer.writerow([sn, '${tax_id}'])
+"""
+}
 
 // Run this channel through deenurp.
+process filterOutliers {
+    container 'golob/deenurp:0.2.6'
+    label 'multithread'
+
+    input:
+        set file(seqs_f), file(seq_info_f) from taxon_group_files_ch
+        file refresh_dd1200_named_taxonomy_f
+    
+    output:
+        set file('outliers.csv'), file('unsorted.fasta'), file('deenurp.log') into filter_outliers_ch 
+    
+    """
+    set -e 
+
+    deenurp -vvv filter_outliers \
+    --strategy cluster \
+    --cluster-type single \
+    --distance-percentile 90.0 \
+    --filter-rank species \
+    --jobs 1 --threads-per-job ${task.cpus} \
+    --max-distance 0.02 \
+    --min-distance 0.01 \
+    --min-seqs-for-filtering 5 \
+    --log deenurp.log \
+    --detailed-seqinfo outliers.csv \
+    --output-seqs unsorted.fasta \
+    ${seqs_f} ${seq_info_f} ${refresh_dd1200_named_taxonomy_f}
+    """
+}
+
+// Make our new outliers.csv
+// Use join to subset the prior outliers to the unchanged
+prior_outliers_ch.join(seqname_unchanged_ch)
+    .set{
+        refresh_outliers_unchanged_ch
+    }
+
+// Rare changed set we let pass through as presumed valid
+seqname_changed_rare_ch
+    .map{ r -> [
+        r[0], // seqname
+        r[1], // tax_id
+        "", // centroid
+        "", // cluster
+        "", // dist,
+        "False", // is_out (false)
+        r[1], // species = tax_id
+        "", // x 
+        "", // y
+    ]}
+    .set {
+        refresh_outliers_changed_rare_ch
+    }
+
+
+refresh_outliers_f = file("${params.out}/dedup/1200bp/named/filtered/outliers.csv")
+                        .text("seqname,tax_id,centroid,cluster,dist,is_out,species,x,y\\n")
+
+refresh_outliers_unchanged_ch
+    .mix(
+        refresh_outliers_changed_rare_ch
+    )
+    .map { r -> 
+        r.join(',')+"\\n"
+    }
+    .first()
+    .println()
 
 /*
 
