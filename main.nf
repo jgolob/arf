@@ -27,16 +27,16 @@
     5) Parse the records, extract the 16S rRNA sequences
     6) Validate the annotations via alignment and/or RNA structure
         comparison to a library of true 16s rRNA genes
-    7) Deduplicate the sequences to:
-        /dedup/
-    8) Validate the length and percent of ambiguous bases in the rRNA gene to:
+    7) Validate the length and percent of ambiguous bases in the rRNA gene to:
         /dedup/1200bp/
-    9) Segregate out 16s rRNA genes from type strains to:
-        /dedup/1200bp/
-    10) Regex based parsing of taxonomic annotations to find out named, to:
+    8) Segregate out 16s rRNA genes from type strains to:
+        /dedup/1200bp/types/
+    9) Regex based parsing of taxonomic annotations to find out named, to:
         /dedup/1200bp/named/
-    11) Cluster and remove outliers to generate:
+    10) Cluster and remove outliers to generate:
         /dedup/1200bp/named/filtered/
+    11) Add in 'trusted' seqs (manually curated versions in a text file.)
+        /dedup/1200bp/named/filtered/trusted/
     12) Append the new entries to the extant library
     13) Use git to version and commit the changes.
 */
@@ -47,7 +47,9 @@ params.help = false
 params.testing = true
 
 
-params.repo = './output'
+params.repo = './ya16sdb'
+params.out = './refreshed'
+
 params.email = false
 params.ncbi_concurrent_connections = 3
 params.retry_max = 1
@@ -55,6 +57,8 @@ params.retry_delay = 60000
 params.min_len = 500
 params.api_key = false
 params.debug = false
+// maximum number of 16S rRNA to return for a given species
+params.species_cap = 5000
 
 if (params.debug == true){
     params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
@@ -63,6 +67,7 @@ else {
     params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 
 }
+//params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
 params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism])"""
 params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
 
@@ -74,14 +79,18 @@ def helpMessage() {
     nextflow run jgolob/ya16sdb <ARGUMENTS>
     
     Required Arguments:
-    --repo                          path to directory holding the extant repo (default = './output')
+    --repo                          path to directory holding the current repo (default = './ya16sdb')
+    --out                           path where refreshed repo should be placed (default = './refreshed')
     --email                         Valid email to use with NCBI
     --ncbi_concurrent_connections   Number of concurrent connections (default = 3)
     --retry_max                     Max retries with NCBI requests (default = 1)
     --retry_delay                   Delay (ms) between retries (default=60000)
+    --min_len                       Minimum annotated length of 16s rRNA to even be downloaded (default 500)
+    --species_cap                   Maximum number of 16s rRNA genes per annotated species (default 5000)
 
 
     Options:
+    --api_key                       NCBI api key (will increase download rate)
     --debug                         Cuts down the number of records for testing
 
     """.stripIndent()
@@ -93,15 +102,11 @@ def helpMessage() {
     Repo structure:
     ./seqs.fasta  <- *all* 16S rRNA to date, valid, invalid, etc
     ./seq_info.csv <- Extract seq info, including version / accession
-    ./refseq_info.csv <- CSV formatted information about the sequences
+    ./refseq_info.csv <- If seqs are from refseq, put info here
     ./pubmed_info.csv <- Pubmed sources for the sequences
     ./references.csv  <- references for the sequences
-    
-    ./dedup/ <- DIR: Holds deduplicated 16S rRNA
-    ./dedup/seqs.fasta
-    ./dedup/seq_info.csv
-    ./dedup/taxonomy.csv <- raw taxonomic annotations
-    
+    ./records.txt   <- All record IDs that meet our criteria
+
     ./dedup/1200bp/ DIR: holds full length 16S rRNA with limited ambiguous bases
     ./dedup/1200bp/seqs.fasta
     ./dedup/1200bp/seq_info.csv
@@ -248,7 +253,7 @@ type_ver = {
     for l in open("${acc_types_f}", 'rt')
 }
 with open('records.current.txt', 'wt') as out_h:
-    for acc in archaea_ver.union(bacteria_ver).union(type_ver):
+    for acc in sorted(archaea_ver.union(bacteria_ver).union(type_ver)):
         out_h.write(acc+"\\n")
 """    
 
@@ -259,6 +264,7 @@ process accessionsToDownload {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     //errorStrategy 'retry'
+    cache 'deep'
 
     input:
         file records_current_f
@@ -278,7 +284,7 @@ prior_version = {
     l.strip()
     for l in open("${prior_records_f}")
 }
-new_versions = current_version - prior_version
+new_versions = sorted(current_version - prior_version)
 with open('download.txt', 'wt') as out_h:
     for acc in new_versions:
         out_h.write(acc+"\\n")
@@ -294,7 +300,7 @@ prior_version = {
     l.strip()
     for l in open("${prior_records_f}")
 }
-new_versions = list(current_version - prior_version)[0:10]
+new_versions = sorted(current_version - prior_version)[0:10]
 with open('download.txt', 'wt') as out_h:
     for acc in new_versions:
         out_h.write(acc+"\\n")
@@ -392,6 +398,7 @@ process get16SrRNA_gb {
 process vsearch_rdp_validate {
     container 'golob/ya16sdb:0.2C'
     label 'mem_veryhigh'
+    cache 'deep'
     //errorStrategy 'retry'
 
     input:
@@ -425,19 +432,34 @@ process vsearch_rdp_validate {
 }
 
 // Step 6: Build taxonomy DB Check tax IDs in seq_info using taxtastic
-process DlBuildTaxtasticDB {
+process downloadTaxdump {
     container = 'golob/ya16sdb:0.2B'
     label = 'io_limited'
+    publishDir path: "${params.out}/", mode: "copy"
+
+    output: 
+        file "taxdmp.zip" into taxdmp_f
+    """
+    set -e
+
+    wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip
+    """    
+}
+
+process buildTaxtasticDB {
+    container = 'golob/ya16sdb:0.2B'
+    label = 'io_limited'
+    publishDir path: "${params.out}/", mode: "copy"
     // errorStrategy = 'retry'
+
+    input:
+        file taxdmp_f
 
     output:
         file "taxonomy.db" into taxonomy_db_f
 
-    afterScript "rm -rf dl/"
-
     """
-    mkdir -p dl/ && \
-    taxit new_database taxonomy.db -u ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdmp.zip -p dl/
+    taxit new_database taxonomy.db -z ${taxdmp_f}
     """
 }
 
@@ -467,6 +489,8 @@ process filterUnknownTaxa {
 process refreshRecords {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
+    cache 'deep'
+    publishDir path: "${params.out}/", mode: "copy"
     //errorStrategy 'retry'
 
     input:
@@ -485,12 +509,12 @@ process refreshRecords {
         file "prior/records.txt" from prior_records_f
 
     output:
-        file "refresh/seqs.fasta" into refresh_seqs_f
-        file "refresh/seq_info.csv" into refresh_si_f
-        file "refresh/pubmed_info.csv" into refresh_pubmed_f
-        file "refresh/references.csv" into refresh_references_f
-        file "refresh/refseq_info.csv" into refresh_refseqinfo_f
-        file "refresh/records.txt" into refresh_records_f
+        file "seqs.fasta" into refresh_seqs_f
+        file "seq_info.csv" into refresh_si_f
+        file "pubmed_info.csv" into refresh_pubmed_f
+        file "references.csv" into refresh_references_f
+        file "refseq_info.csv" into refresh_refseqinfo_f
+        file "records.txt" into refresh_records_f
 
     script:
     """
@@ -512,12 +536,12 @@ process refreshRecords {
     new/references.csv prior/references.csv \
     new/refseq_info.csv prior/refseq_info.csv \
     ${vsearch_unknowns_txt_f} prior/records.txt \
-    refresh/seqs.fasta \
-    refresh/seq_info.csv \
-    refresh/pubmed_info.csv \
-    refresh/references.csv \
-    refresh/refseq_info.csv \
-    refresh/records.txt
+    seqs.fasta \
+    seq_info.csv \
+    pubmed_info.csv \
+    references.csv \
+    refseq_info.csv \
+    records.txt
     """
 }
 
@@ -525,6 +549,7 @@ process refreshRecords {
 process taxonomyTable_refresh {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
+    publishDir path: "${params.out}/", mode: "copy"
 
     input:
         file taxonomy_db_f
@@ -567,6 +592,116 @@ process buildFeatherSI {
     sort_values.py seq_info.feather "is_type,is_published,is_refseq,ambig_count,modified_date,download_date,seqhash"
     """
 }
+
+// Step 10: Split out our deduplicated 1200bp seqs.
+process refresh_dd1200bp {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
+    publishDir path: "${params.out}/dedup/1200bp/", mode: "copy"
+
+    input:
+        file refresh_feather_si
+        file "unfiltered_seqs.fasta" from refresh_seqs_f
+
+    output:
+        file "seqs.fasta" into refresh_dd1200_seqs_f
+        file "seq_info.csv" into refresh_dd1200_si_f
+        file "blast.nhr" into refresh_dd1200_nhr_f
+        file "blast.nsq" into refresh_dd1200_nsq_f
+        file "blast.nin" into refresh_dd1200_nin_f
+
+    """
+    set -e
+    mkdir -p partition
+    partition_refs.py \
+    --drop-duplicate-sequences \
+    --min-length 1200 \
+    --prop-ambig-cutoff 0.01 \
+    unfiltered_seqs.fasta ${refresh_feather_si} \
+    seqs.fasta seq_info.csv
+
+    makeblastdb -dbtype nucl -in seqs.fasta -out blast
+    """
+}
+
+process refresh_types {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
+    publishDir path: "${params.out}/dedup/1200bp/types/", mode: "copy"
+
+    input:
+        file refresh_feather_si
+        file "unfiltered_seqs.fasta" from refresh_dd1200_seqs_f
+        file taxonomy_db_f
+
+    output:
+        file "seqs.fasta" into refresh_dd1200_types_seqs_f
+        file "seq_info.csv" into refresh_dd1200_types_si_f
+        file "taxonomy.csv" into refresh_dd1200_types_taxonomy_f
+        file "lineages.csv" into refresh_dd1200_types_lineages_f
+        file "lineages.txt" into refresh_dd1200_types_lineages_mothur_f
+        file "blast.nhr" into refresh_dd1200_types_nhr_f
+        file "blast.nsq" into refresh_dd1200_types_nsq_f
+        file "blast.nin" into refresh_dd1200_types_nin_f
+
+    """
+    set -e
+    mkdir -p partition
+    partition_refs.py \
+    --is_species \
+    --is_type \
+    --is_valid \
+    unfiltered_seqs.fasta ${refresh_feather_si} \
+    seqs.fasta seq_info.csv
+    
+    taxit -v taxtable --seq-info seq_info.csv --out taxonomy.csv ${taxonomy_db_f}
+    taxit lineage_table --csv-table lineages.csv taxonomy.csv seq_info.csv
+    taxit lineage_table --taxonomy-table lineages.txt taxonomy.csv seq_info.csv
+    makeblastdb -dbtype nucl -in seqs.fasta -out blast
+    """
+}
+
+
+process refresh_named {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
+    publishDir path: "${params.out}/dedup/1200bp/named/", mode: "copy"
+
+    input:
+        file refresh_feather_si
+        file "unfiltered_seqs.fasta" from refresh_dd1200_seqs_f
+        file taxonomy_db_f
+
+    output:
+        file "seqs.fasta" into refresh_dd1200_named_seqs_f
+        file "seq_info.csv" into refresh_dd1200_named_si_f
+        file "taxonomy.csv" into refresh_dd1200_named_taxonomy_f
+        file "lineages.csv" into refresh_dd1200_named_lineages_f
+        file "lineages.txt" into refresh_dd1200_named_lineages_mothur_f
+        file "blast.nhr" into refresh_dd1200_named_nhr_f
+        file "blast.nsq" into refresh_dd1200_named_nsq_f
+        file "blast.nin" into refresh_dd1200_named_nin_f
+
+    """
+    set -e
+
+    partition_refs.py \
+    --is_species \
+    --is_valid \
+    --species-cap ${params.species_cap} \
+    unfiltered_seqs.fasta ${refresh_feather_si} \
+    seqs.fasta seq_info.csv
+    
+    taxit -v taxtable --seq-info seq_info.csv --out taxonomy.csv ${taxonomy_db_f}
+    taxit lineage_table --csv-table lineages.csv taxonomy.csv seq_info.csv
+    taxit lineage_table --taxonomy-table lineages.txt taxonomy.csv seq_info.csv
+    makeblastdb -dbtype nucl -in seqs.fasta -out blast
+    """
+}
+
+// Group the named seqs by annotated tax id to create a channel
+
+// Run this channel through deenurp.
 
 /*
 
