@@ -713,7 +713,6 @@ process refresh_types {
     """
 }
 
-
 process refresh_named {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
@@ -782,6 +781,7 @@ Channel.from(prior_outliers_f)
         r.seqname,
         r.tax_id,
         r.centroid,
+        r.cluster,
         r.dist,
         r.is_out,
         r.species,
@@ -926,6 +926,7 @@ process filterOutliers {
 }
 
 // Make our new outliers.csv
+
 // Use join to subset the prior outliers to the unchanged
 prior_outliers_ch.join(seqname_unchanged_ch)
     .set{
@@ -949,19 +950,109 @@ seqname_changed_rare_ch
         refresh_outliers_changed_rare_ch
     }
 
+filter_outliers_ch
+    // read in each outliers.csv. Remove header. 
+    .flatMap { r -> 
+        lines = r[0].readLines();
+        lines.removeAt(0);
+        return lines;
+    }
+    .set {
+        refresh_outliers_changed_ch
+    }
 
-refresh_outliers_f = file("${params.out}/dedup/1200bp/named/filtered/outliers.csv")
-                        .text("seqname,tax_id,centroid,cluster,dist,is_out,species,x,y\\n")
 
 refresh_outliers_unchanged_ch
     .mix(
         refresh_outliers_changed_rare_ch
     )
     .map { r -> 
-        r.join(',')+"\\n"
+        r.join(',')
     }
-    .first()
-    .println()
+    .mix(
+        refresh_outliers_changed_ch
+    )
+    .reduce(""){ p,c ->
+        p += (c+"\\n");
+        return p;
+    }
+    .set{
+        refresh_outlier_details_val
+    }
+
+
+process makeRefreshedOutliers {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_limited'
+    publishDir path: "${params.out}/dedup/1200bp/named/filtered/", mode: 'copy'
+    input:
+        val refresh_outlier_details_val
+    output:
+        file 'outliers.csv' into refresh_outliers_f
+    
+    """
+    printf "seqname,tax_id,centroid,cluster,dist,is_out,species,x,y\\n" > outliers.csv
+    printf "${refresh_outlier_details_val}" >> outliers.csv
+    """
+}
+
+// Integrate in the outlier information to the feather-seq-info
+
+process injectOutlier {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
+
+    input:
+        file refresh_feather_si
+        file refresh_outliers_f
+    
+    output:
+        file 'seq_info_wOutlier.feather' into refresh_feather_wOutlier_si
+    """
+    set -e
+
+    cp ${refresh_feather_si} seq_info_wOutlier.feather
+    filter_outliers.py seq_info_wOutlier.feather ${refresh_outliers_f}
+    """
+}
+
+process refresh_filtered {
+    container 'golob/ya16sdb:0.2C'
+    label 'io_mem'
+    publishDir path: "${params.out}/dedup/1200bp/named/filtered/", mode: "copy"
+
+    input:
+        file refresh_feather_wOutlier_si
+        file "unfiltered_seqs.fasta" from refresh_dd1200_named_seqs_f
+        file taxonomy_db_f
+
+    output:
+        file "seqs.fasta" into refresh_dd1200_named_filtered_seqs_f
+        file "seq_info.csv" into refresh_dd1200_named_filtered_si_f
+        file "taxonomy.csv" into refresh_dd1200_named_filtered_taxonomy_f
+        file "lineages.csv" into refresh_dd1200_named_filtered_lineages_f
+        file "lineages.txt" into refresh_dd1200_named_filtered_lineages_mothur_f
+        file "blast.nhr" into refresh_dd1200_named_filtered_nhr_f
+        file "blast.nsq" into refresh_dd1200_named_filtered_nsq_f
+        file "blast.nin" into refresh_dd1200_named_filtered_nin_f
+
+    """
+    set -e
+
+    partition_refs.py \
+    --inliers \
+    --is_species \
+    --is_valid \
+    --species-cap ${params.species_cap} \
+    unfiltered_seqs.fasta ${refresh_feather_wOutlier_si} \
+    seqs.fasta seq_info.csv
+    
+    taxit -v taxtable --seq-info seq_info.csv --out taxonomy.csv ${taxonomy_db_f}
+    taxit lineage_table --csv-table lineages.csv taxonomy.csv seq_info.csv
+    taxit lineage_table --taxonomy-table lineages.txt taxonomy.csv seq_info.csv
+    makeblastdb -dbtype nucl -in seqs.fasta -out blast
+    """
+}
 
 /*
 
