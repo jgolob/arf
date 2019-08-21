@@ -171,7 +171,7 @@ prior_outliers_f = file "${params.repo}/dedup/1200bp/named/filtered/outliers.csv
 process retrieveAcc_archaea {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
-    errorStrategy 'retry'
+    errorStrategy 'finish'
 
     output:
         file "archaea_acc.txt" into acc_archaea_f
@@ -191,7 +191,7 @@ process retrieveAcc_archaea {
 process retrieveAcc_bacteria {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
-    errorStrategy 'retry'
+    errorStrategy 'finish'
 
     output:
         file "bacteria_acc.txt" into acc_bacteria_f
@@ -212,7 +212,7 @@ process retrieveAcc_bacteria {
 process retrieveAcc_types {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
-    errorStrategy 'retry'
+    errorStrategy 'finish'
 
     output:
         file "types_acc.txt" into acc_types_f
@@ -237,6 +237,8 @@ process retrieveAcc_types {
 process combineCurrentAccessions {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
+    errorStrategy 'finish'
+
     input:
         file acc_types_f
         file acc_archaea_f
@@ -268,7 +270,7 @@ with open('records.current.txt', 'wt') as out_h:
 process accessionsToDownload {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
-    //errorStrategy 'retry'
+    errorStrategy 'finish'
     cache 'deep'
 
     input:
@@ -318,7 +320,7 @@ with open('download.txt', 'wt') as out_h:
 process get16SrRNA_feat {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
-    //errorStrategy 'retry'
+    errorStrategy 'finish'
 
     input:
         file acc_to_download_f
@@ -354,7 +356,7 @@ today = new Date().format('dd-MMM-yyyy')
 process get16SrRNA_gb {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
-    //errorStrategy 'retry'
+    errorStrategy 'finish'
 
 
     input:
@@ -404,7 +406,7 @@ process vsearch_rdp_validate {
     container 'golob/ya16sdb:0.2C'
     label 'mem_veryhigh'
     cache 'deep'
-    //errorStrategy 'retry'
+    errorStrategy 'finish'
 
     input:
         file new_16s_seqs_fasta_f
@@ -440,6 +442,7 @@ process vsearch_rdp_validate {
 process downloadTaxdump {
     container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
+    errorStrategy 'finish'
     publishDir path: "${params.out}/", mode: "copy"
 
     output: 
@@ -455,7 +458,7 @@ process buildTaxtasticDB {
     container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
     publishDir path: "${params.out}/", mode: "copy"
-    // errorStrategy = 'retry'
+    errorStrategy 'finish'
 
     input:
         file taxdmp_f
@@ -471,7 +474,7 @@ process buildTaxtasticDB {
 process filterUnknownTaxa {
     container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
-    // errorStrategy = 'retry'
+    errorStrategy 'finish'
 
     input:
         file taxonomy_db_f
@@ -496,6 +499,7 @@ if (args.debug != false) {
 process debug_records {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
+    errorStrategy 'finish'
     cache 'deep'
     
     input:
@@ -525,7 +529,7 @@ process refreshRecords {
     label 'io_mem'
     cache 'deep'
     publishDir path: "${params.out}/", mode: "copy"
-    //errorStrategy 'retry'
+    errorStrategy 'finish'
 
     input:
         file "new/records.txt" from records_current_f
@@ -583,6 +587,7 @@ process refreshRecords {
 process refresh_verifyTaxIds {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
+    errorStrategy 'finish'
 
     input:
         file taxonomy_db_f
@@ -619,6 +624,7 @@ process taxonomyTable_refresh {
 process buildFeatherSI {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
+    errorStrategy 'finish'
 
     input:
         file refresh_seqs_f
@@ -650,6 +656,7 @@ process refresh_dd1200bp {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
     publishDir path: "${params.out}/dedup/1200bp/", mode: "copy"
+    errorStrategy 'finish'
 
     input:
         file refresh_feather_si
@@ -680,6 +687,7 @@ process refresh_types {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
     publishDir path: "${params.out}/dedup/1200bp/types/", mode: "copy"
+    errorStrategy 'finish'
 
     input:
         file refresh_feather_si
@@ -717,6 +725,7 @@ process refresh_named {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
     publishDir path: "${params.out}/dedup/1200bp/named/", mode: "copy"
+    errorStrategy 'finish'
 
     input:
         file refresh_feather_si
@@ -754,6 +763,7 @@ process refresh_named {
 process groupNamedByTaxa {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
+    errorStrategy 'finish'
 
     input:
         file refresh_dd1200_named_si_f
@@ -862,6 +872,7 @@ tax_group_changed_tofilter_ch
 process taxonGroupFiles {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
+    errorStrategy 'finish'
 
     input:
         set tax_id, seq_names from tax_group_changed_tofilter_ch
@@ -898,6 +909,7 @@ with open('taxon_seq_info.csv', 'wt') as taxon_si_h:
 process filterOutliers {
     container 'golob/deenurp:0.2.6'
     label 'multithread'
+    errorStrategy 'finish'
 
     input:
         set file(seqs_f), file(seq_info_f) from taxon_group_files_ch
@@ -984,7 +996,9 @@ refresh_outliers_unchanged_ch
 process makeRefreshedOutliers {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
+    errorStrategy 'finish'
     publishDir path: "${params.out}/dedup/1200bp/named/filtered/", mode: 'copy'
+
     input:
         val refresh_outlier_details_val
     output:
@@ -1001,6 +1015,7 @@ process makeRefreshedOutliers {
 process injectOutlier {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
+    errorStrategy 'finish'
 
     input:
         file refresh_feather_si
@@ -1019,6 +1034,7 @@ process injectOutlier {
 process refresh_filtered {
     container 'golob/ya16sdb:0.2C'
     label 'io_mem'
+    errorStrategy 'finish'
     publishDir path: "${params.out}/dedup/1200bp/named/filtered/", mode: "copy"
 
     input:
