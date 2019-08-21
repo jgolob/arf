@@ -907,7 +907,7 @@ with open('taxon_seq_info.csv', 'wt') as taxon_si_h:
 
 // Run this channel through deenurp.
 process filterOutliers {
-    container 'golob/deenurp:0.2.6'
+    container 'golob/deenurp:0.2.6A'
     label 'multithread'
     errorStrategy 'finish'
 
