@@ -438,7 +438,7 @@ process vsearch_rdp_validate {
 
 // Step 6: Build taxonomy DB Check tax IDs in seq_info using taxtastic
 process downloadTaxdump {
-    container = 'golob/ya16sdb:0.2B'
+    container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
     publishDir path: "${params.out}/", mode: "copy"
 
@@ -452,7 +452,7 @@ process downloadTaxdump {
 }
 
 process buildTaxtasticDB {
-    container = 'golob/ya16sdb:0.2B'
+    container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
     publishDir path: "${params.out}/", mode: "copy"
     // errorStrategy = 'retry'
