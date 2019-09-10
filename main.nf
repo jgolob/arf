@@ -357,6 +357,7 @@ process get16SrRNA_gb {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
+    cache 'deep'
 
 
     input:
@@ -872,7 +873,7 @@ tax_group_changed_tofilter_ch
 process taxonGroupFiles {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
-    errorStrategy 'finish'
+    errorStrategy 'retry'
 
     input:
         set tax_id, seq_names from tax_group_changed_tofilter_ch
