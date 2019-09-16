@@ -47,7 +47,7 @@ params.help = false
 params.testing = true
 
 
-params.repo = './ya16sdb'
+params.repo = './arf'
 params.out = './refreshed'
 
 params.email = false
@@ -80,10 +80,10 @@ def helpMessage() {
     log.info"""
     Usage:
 
-    nextflow run jgolob/ya16sdb <ARGUMENTS>
+    nextflow run jgolob/arf <ARGUMENTS>
     
     Required Arguments:
-    --repo                          path to directory holding the current repo (default = './ya16sdb')
+    --repo                          path to directory holding the current repo (default = './arf')
     --out                           path where refreshed repo should be placed (default = './refreshed')
     --email                         Valid email to use with NCBI
     --ncbi_concurrent_connections   Number of concurrent connections (default = 3)
