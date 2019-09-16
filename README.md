@@ -39,7 +39,56 @@ Options:
 --debug                         Cuts down the number of records for testing
 ```
 
-ARF makes tails wag and is a collaboration between Noah Hoffman and Chris Rosenthal of laboratory medicine at the University of Washgton and Fred Hutch and Jonathan Golob of the University of Michigan Department of Medicine and Division of Infectious Diseases. Use it at your own risk.
+## Output
+```
+arf/
+├── dedup
+│   └── 1200bp
+│       ├── named
+│       │   ├── blast.nhr
+│       │   ├── blast.nin
+│       │   ├── blast.nsq
+│       │   ├── filtered
+│       │   │   ├── blast.nhr
+│       │   │   ├── blast.nin
+│       │   │   ├── blast.nsq
+│       │   │   ├── lineages.csv
+│       │   │   ├── lineages.txt
+│       │   │   ├── outliers.csv
+│       │   │   ├── seq_info.csv
+│       │   │   ├── seqs.fasta
+│       │   │   └── taxonomy.csv
+│       │   ├── lineages.csv
+│       │   ├── lineages.txt
+│       │   ├── seq_info.csv
+│       │   ├── seqs.fasta
+│       │   └── taxonomy.csv
+│       ├── seq_info.csv
+│       ├── seqs.fasta
+│       └── types
+│           ├── blast.nhr
+│           ├── blast.nin
+│           ├── blast.nsq
+│           ├── lineages.csv
+│           ├── lineages.txt
+│           ├── seq_info.csv
+│           ├── seqs.fasta
+│           └── taxonomy.csv
+├── pubmed_info.csv
+├── records.txt
+├── references.csv
+├── refseq_info.csv
+├── seq_info.csv
+├── seqs.fasta
+├── taxdmp.zip
+├── taxonomy.csv
+└── taxonomy.db
+```
+
+Outputs are intended to be compatible with [mothur](https://www.mothur.org) and [MaLiAmPi](https://github.com/jgolob/maliampi).
+
+## Disclosures
+ARF makes tails wag and is a collaboration between Noah Hoffman and Chris Rosenthal of Laboratory Medicine at the University of Washington and Fred Hutch and Jonathan Golob of the University of Michigan Department of Medicine and Division of Infectious Diseases. Use it at your own risk.
 
 <b id="f1">1</b>  [↩](#a1) The exact NCBI NT search strings are: 
 
