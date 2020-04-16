@@ -1,7 +1,7 @@
 #!/usr/bin/env nextflow
 
 /*
-  ya16sdb: Download and curate the 16S rRNA sequences from NCBI
+  arf: Download and curate the 16S rRNA sequences from NCBI
     Originally developed by Noah Hoffman and Chris Rosenthal
     Adapted to nextflow from sconstruct by Jonathan Golob
 
@@ -64,9 +64,9 @@ params.min_seqs_for_filtering = 5
 
 
 if (params.debug == true){
-    params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
-    params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
-    params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2019/06/01"[Publication Date] : "2019/06/02"[Publication Date])"""
+    params.rRNA16S_bact_search = """16s[All Fields] AND rRNA[Feature Key] AND Bacteria[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2020/02/01"[Publication Date] : "2020/02/02"[Publication Date])"""
+    params.rRNA16S_arch_search = """16s[All Fields] AND rRNA[Feature Key] AND Archaea[Organism] AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND ("2020/02/01"[Publication Date] : "2020/02/02"[Publication Date])"""
+    params.rRNA16S_type_search = """16s[All Fields] AND rRNA[Feature Key] AND (Bacteria[Organism] OR  Archaea[Organism]) AND ${params.min_len} : 99999999999[Sequence Length] NOT(environmental samples[Organism] OR unclassified Bacteria[Organism]) AND sequence_from_type[Filter] AND ("2020/02/01"[Publication Date] : "2020/02/02"[Publication Date])"""
 
 }
 else {
@@ -172,6 +172,7 @@ process retrieveAcc_archaea {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
+    executor 'local'
 
     output:
         file "archaea_acc.txt" into acc_archaea_f
@@ -192,6 +193,7 @@ process retrieveAcc_bacteria {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
+    executor 'local'
 
     output:
         file "bacteria_acc.txt" into acc_bacteria_f
@@ -213,6 +215,7 @@ process retrieveAcc_types {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
+    executor 'local'
 
     output:
         file "types_acc.txt" into acc_types_f
@@ -321,6 +324,7 @@ process get16SrRNA_feat {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
+    executor 'local'
 
     input:
         file acc_to_download_f
@@ -358,6 +362,7 @@ process get16SrRNA_gb {
     label 'io_limited'
     errorStrategy 'finish'
     cache 'deep'
+    executor 'local'
 
 
     input:
@@ -445,6 +450,7 @@ process downloadTaxdump {
     label = 'io_limited'
     errorStrategy 'finish'
     publishDir path: "${params.out}/", mode: "copy"
+    executor 'local'
 
     output: 
         file "taxdmp.zip" into taxdmp_f
@@ -496,7 +502,7 @@ process filterUnknownTaxa {
 // Step 7: Refresh the repo seqs!
 
 // A bit of fakery for debug
-if (args.debug != false) {
+if (args.debug) {
 process debug_records {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
