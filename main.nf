@@ -53,7 +53,7 @@ params.out = './refreshed'
 params.email = false
 params.ncbi_concurrent_connections = 3
 params.retry_max = 1
-params.retry_delay = 60000
+params.retry_delay = 60
 params.min_len = 500
 params.api_key = false
 params.debug = false
@@ -317,21 +317,46 @@ with open('download.txt', 'wt') as out_h:
 """
 }
 
+// Split the downloads into chunks to make this all less painful
+process split_downloads {
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label 'io_limited'
+    errorStrategy 'finish'
+    executor 'local'
+    input:
+        file acc_to_download_f
+    output:
+        file "download_chunk.*" into download_acc_chunks_list
+    
+    """
+    set -e
 
+    split -l 10000 ${acc_to_download_f} download_chunk.
+
+    """
+}
 
 // Step 3. For each new accession, find the 16S rRNA features
+
+
+download_acc_chunks_list
+    .flatten()
+    .set{
+        download_acc_chunks_ch        
+    }
 
 process get16SrRNA_feat {
     container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
     executor 'local'
+    maxForks 2
 
     input:
-        file acc_to_download_f
+        file (acc_to_download_f) from download_acc_chunks_ch
 
     output:
-        file "new_16s_rrna_feat.csv" into new_16s_rRNA_feat_f
+        file ("new_16s_rrna_feat.${acc_to_download_f}.csv") into new_16s_rRNA_feat_ch
 
     script:
     if (params.api_key == false)
@@ -341,7 +366,7 @@ process get16SrRNA_feat {
     mefetch -proc ${task.cpus} -max-retry ${params.retry_max} -retry ${params.retry_delay} \
     --email ${params.email} -db nucleotide -mode text -format ft -id ${acc_to_download_f} |
     ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue \
-    -out new_16s_rrna_feat.csv
+    -out new_16s_rrna_feat.${acc_to_download_f}.csv
     """
     else
     """
@@ -351,7 +376,7 @@ process get16SrRNA_feat {
     --email ${params.email} -api-key ${params.api_key} -db nucleotide -mode text \
     -format ft -id ${acc_to_download_f} |
     ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue \
-    -out new_16s_rrna_feat.csv
+    -out new_16s_rrna_feat.${acc_to_download_f}.csv
     """   
 }
 
@@ -364,18 +389,18 @@ process get16SrRNA_gb {
     errorStrategy 'finish'
     cache 'deep'
     executor 'local'
-
+    maxForks 2
 
     input:
-        file new_16s_rRNA_feat_f
+        file (new_16s_rRNA_feat_f) from new_16s_rRNA_feat_ch
         val today
     
     output:
-        file "seqs.fasta" into new_16s_seqs_fasta_f
-        file "seq_info.csv" into new_16s_si_f
-        file "pubmed_info.csv" into new_16s_pubmed_f
-        file "references.csv" into new_16s_refs_f
-        file "refseq_info.csv" into new_16s_refseqinfo_f
+        tuple file ("${new_16s_rRNA_feat_f}.seqs.fasta"), 
+        file ("${new_16s_rRNA_feat_f}.seq_info.csv"), 
+        file ("${new_16s_rRNA_feat_f}.pubmed_info.csv"), 
+        file ("${new_16s_rRNA_feat_f}.references.csv"), 
+        file ("${new_16s_rRNA_feat_f}.refseq_info.csv") into new_dl_features_ch
 
     script:
     if (params.api_key == false)
@@ -386,11 +411,11 @@ process get16SrRNA_gb {
     --email ${params.email} -db nucleotide -mode text \
     -csv -format gbwithparts -id ${new_16s_rRNA_feat_f} |
     extract_genbank ${today} \
-    seqs.fasta \
-    seq_info.csv \
-    pubmed_info.csv \
-    references.csv \
-    refseq_info.csv
+    ${new_16s_rRNA_feat_f}.seqs.fasta \
+    ${new_16s_rRNA_feat_f}.seq_info.csv \
+    ${new_16s_rRNA_feat_f}.pubmed_info.csv \
+    ${new_16s_rRNA_feat_f}.references.csv \
+    ${new_16s_rRNA_feat_f}.refseq_info.csv
     """
     else
     """
@@ -400,12 +425,177 @@ process get16SrRNA_gb {
     --email ${params.email} --api-key ${params.api_key} -db nucleotide -mode text \
     -csv -format gbwithparts -id ${new_16s_rRNA_feat_f} |
     extract_genbank ${today} \
-    seqs.fasta \
-    seq_info.csv \
-    pubmed_info.csv \
-    references.csv \
-    refseq_info.csv
+    ${new_16s_rRNA_feat_f}.seqs.fasta \
+    ${new_16s_rRNA_feat_f}.seq_info.csv \
+    ${new_16s_rRNA_feat_f}.pubmed_info.csv \
+    ${new_16s_rRNA_feat_f}.references.csv \
+    ${new_16s_rRNA_feat_f}.refseq_info.csv
     """
+}
+
+new_dl_features_ch
+    .multiMap { it ->
+        for_vsearch: [it[0], it[1]]
+        pubmed: it[2]
+        references: it[3]
+        refseq_info: it[4]
+    
+    }
+    .set {
+        new_dl_split_ch
+    }
+
+new_dl_split_ch.for_vsearch
+    .filter { 
+        (!file(it[0]).isEmpty()) && (!file(it[1]).isEmpty())
+    }
+    .set {
+        new_dl_features_for_vsearch_ch
+    }
+
+// Combine batches
+
+
+// Combine post-vsearch batches!
+new_dl_split_ch.pubmed
+    .filter {
+        !file(it).isEmpty()
+    }
+    .unique()
+    .toList()
+    .set {
+        new_pubmeds
+    }
+
+process combineBatches_pubmed {
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        file (new_pubmeds)
+    output:
+        file("new_pubmed.csv") into new_pubmed_f
+    
+"""
+#!/usr/bin/env python
+import csv
+
+files = "${new_pubmeds.join(";")}".split(';')
+if len(files) > 0:
+    readers = [
+        csv.DictReader(open(fn, 'rt'))
+        for fn in files
+    ]
+    headers = [
+        r.fieldnames
+        for r in readers
+    ]
+    common_header = headers[0]
+    for ch in headers[1:]:
+        common_header += [h for h in ch if h not in common_header]
+
+    with open("new_pubmed.csv", 'wt') as out_h:
+        out_w = csv.DictWriter(out_h, fieldnames=common_header)
+        out_w.writeheader()
+        for reader in readers:
+            out_w.writerows(reader)
+else:
+    open("new_pubmed.csv", 'wt')
+
+""" 
+}
+
+new_dl_split_ch.references
+    .filter {
+        !file(it).isEmpty()
+    }
+    .unique()
+    .toList()
+    .set {
+        new_refs
+    }
+
+process combineBatches_references {
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        file(new_refs)
+    output:
+        file("new_references.csv") into new_refs_f
+    
+"""
+#!/usr/bin/env python
+import csv
+
+files = "${new_refs.join(";")}".split(';')
+if len(files) > 0:
+    readers = [
+        csv.DictReader(open(fn, 'rt'))
+        for fn in files
+    ]
+    headers = [
+        r.fieldnames
+        for r in readers
+    ]
+    common_header = headers[0]
+    for ch in headers[1:]:
+        common_header += [h for h in ch if h not in common_header]
+
+    with open("new_references.csv", 'wt') as out_h:
+        out_w = csv.DictWriter(out_h, fieldnames=common_header)
+        out_w.writeheader()
+        for reader in readers:
+            out_w.writerows(reader)
+else:
+    open("new_references.csv", 'wt')
+""" 
+}
+
+new_dl_split_ch.refseq_info
+    .filter {
+        !file(it).isEmpty()
+    }
+    .unique()
+    .toList()
+    .set {
+        new_refseq_infos
+    }
+process combineBatches_refseq {
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        file(new_refseq_infos)
+    output:
+        file("new_refseq_info.csv") into new_refseq_info_f
+    
+"""
+#!/usr/bin/env python
+import csv
+
+files = "${new_refseq_infos.join(";")}".split(';')
+if len(files) > 0:
+    readers = [
+        csv.DictReader(open(fn, 'rt'))
+        for fn in files
+    ]
+    headers = [
+        r.fieldnames
+        for r in readers
+    ]
+    common_header = headers[0]
+    for ch in headers[1:]:
+        common_header += [h for h in ch if h not in common_header]
+
+    with open("new_refseq_info.csv", 'wt') as out_h:
+        out_w = csv.DictWriter(out_h, fieldnames=common_header)
+        out_w.writeheader()
+        for reader in readers:
+            out_w.writerows(reader)
+else:
+    open("new_refseq_info.csv", 'wt')
+""" 
 }
 
 // Step 5: Align against RDP type strains with vsearch to validate
@@ -416,17 +606,15 @@ process vsearch_rdp_validate {
     errorStrategy 'finish'
 
     input:
-        file new_16s_seqs_fasta_f
-        file new_16s_si_f
-        file prior_unknowns_f
+        tuple file (new_16s_seqs_fasta_f), file(new_16s_si_f)  from new_dl_features_for_vsearch_ch
+        file (prior_unknowns_f)
         
     
     output:
-        file "vsearch/seqs.fasta" into vsearch_seqs_f
-        file "vsearch/seq_info.csv" into vsearch_si_f
-        file "vsearch/unknown.fasta" into vsearch_unknown_fasta_f
-        file "vsearch/unknowns.txt" into vsearch_unknowns_txt_f
-
+    tuple file ("vsearch/${new_16s_seqs_fasta_f.getBaseName()}.seqs.fasta"), 
+        file("vsearch/${new_16s_seqs_fasta_f.getBaseName()}.seq_info.csv"), 
+        file ("vsearch/${new_16s_seqs_fasta_f.getBaseName()}.unknown.fasta"), 
+        file ("vsearch/${new_16s_seqs_fasta_f.getBaseName()}.unknowns.txt") into post_vsearch_ch
     script:
     """
     set -e
@@ -441,7 +629,7 @@ process vsearch_rdp_validate {
     --userout vsearch.tsv
     mkdir -p vsearch
     vsearch.py vsearch.tsv ${new_16s_seqs_fasta_f} ${new_16s_si_f} ${prior_unknowns_f} \
-    vsearch/seqs.fasta vsearch/seq_info.csv vsearch/unknown.fasta vsearch/unknowns.txt
+    vsearch/${new_16s_seqs_fasta_f.getBaseName()}.seqs.fasta vsearch/${new_16s_seqs_fasta_f.getBaseName()}.seq_info.csv vsearch/${new_16s_seqs_fasta_f.getBaseName()}.unknown.fasta vsearch/${new_16s_seqs_fasta_f.getBaseName()}.unknowns.txt
     """
 }
 
@@ -479,6 +667,107 @@ process buildTaxtasticDB {
     """
 }
 
+post_vsearch_ch
+    .multiMap { it ->
+        seqs: it[0]
+        si: it[1]
+        unknown_fasta: it[2]
+        unknown_rec: it[3]
+    }
+    .set { post_vsearch_split }
+
+post_vsearch_split.si
+    .toList()
+    .set {
+        post_vsearch_si
+    }
+
+post_vsearch_split.seqs
+    .toList()
+    .set {
+        post_vsearch_seqs
+    }
+
+post_vsearch_split.unknown_rec
+    .toList()
+    .set {
+        post_vsearch_unknown_recs
+    }
+
+
+// Combine post-vsearch batches!
+
+process combineBatches_unknown_recs {
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        file "inputs/*" from post_vsearch_unknown_recs
+    output:
+        file("new_vsearch_unknown.txt") into vsearch_unknowns_txt_f
+    
+    """
+    set -e
+
+    cat inputs/* > new_vsearch_unknown.txt
+    """
+    
+}
+
+
+process combineBatches_seq {
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        file "inputs/*" from post_vsearch_seqs
+    output:
+        file("new_combined_seqs.fasta") into new_combined_seqs_f
+    
+    """
+    set -e
+
+    cat inputs/* > new_combined_seqs.fasta
+    """
+    
+}
+
+
+process combineBatches_si {
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        file(post_vsearch_si)
+    output:
+        file("new_combined_seq_info.csv") into new_combined_si_f
+
+"""
+#!/usr/bin/env python
+import csv
+
+files = "${post_vsearch_si}".split()
+readers = [
+    csv.DictReader(open(fn, 'rt'))
+    for fn in files
+]
+headers = [
+    r.fieldnames
+    for r in readers
+]
+common_header = headers[0]
+for ch in headers[1:]:
+    common_header += [h for h in ch if h not in common_header]
+
+with open("new_combined_seq_info.csv", 'wt') as out_h:
+    out_w = csv.DictWriter(out_h, fieldnames=common_header)
+    out_w.writeheader()
+    for reader in readers:
+        out_w.writerows(reader)
+
+"""
+}
+
 process filterUnknownTaxa {
     container = 'golob/ya16sdb:0.2C'
     label = 'io_limited'
@@ -486,7 +775,7 @@ process filterUnknownTaxa {
 
     input:
         file taxonomy_db_f
-        file vsearch_si_f
+        file new_combined_si_f
     
     output:
         file "filtered/seq_info.csv" into new_filtered_si_f
@@ -495,7 +784,7 @@ process filterUnknownTaxa {
     mkdir -p filtered/
     taxit update_taxids \
     --unknown-action drop --outfile filtered/seq_info.csv \
-    ${vsearch_si_f} ${taxonomy_db_f}
+    ${new_combined_si_f} ${taxonomy_db_f}
     """
 }
 
@@ -541,18 +830,20 @@ process refreshRecords {
 
     input:
         file "new/records.txt" from records_current_f
-        file "new/seqs.fasta" from vsearch_seqs_f
-        file "prior/seqs.fasta" from prior_seqs_f
+        file "new/seqs.fasta" from new_combined_seqs_f
         file "new/seq_info.csv" from new_filtered_si_f
-        file "prior/seq_info.csv" from prior_si_f
-        file "new/pubmed_info.csv" from new_16s_pubmed_f
-        file "prior/pubmed_info.csv" from prior_pubmed_f
-        file "new/references.csv" from new_16s_refs_f
-        file "prior/references.csv" from prior_references_f
-        file "new/refseq_info.csv" from new_16s_refseqinfo_f
-        file "prior/refseq_info.csv" from prior_refseqinfo_f
+        file "new/pubmed_info.csv" from new_pubmed_f
+        file "new/references.csv" from new_refs_f
+        file "new/refseq_info.csv" from new_refseq_info_f
         file vsearch_unknowns_txt_f
+
+        file "prior/seqs.fasta" from prior_seqs_f
+        file "prior/seq_info.csv" from prior_si_f
+        file "prior/pubmed_info.csv" from prior_pubmed_f
+        file "prior/references.csv" from prior_references_f
+        file "prior/refseq_info.csv" from prior_refseqinfo_f
         file "prior/records.txt" from prior_records_f
+        
 
     output:
         file "seqs.fasta" into refresh_seqs_f
@@ -1078,7 +1369,7 @@ process refresh_filtered {
     """
 }
 
-/*
+
 
 
 // */
