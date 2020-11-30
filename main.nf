@@ -53,7 +53,7 @@ params.out = './refreshed'
 params.email = false
 params.ncbi_concurrent_connections = 3
 params.retry_max = 1
-params.retry_delay = 60
+params.retry_delay = 1000
 params.min_len = 500
 params.api_key = false
 params.debug = false
@@ -186,6 +186,8 @@ process retrieveAcc_archaea {
     --retry_max ${params.retry_max} --retry_delay ${params.retry_delay} \
     --query "${params.rRNA16S_arch_search}" \
     --out archaea_acc.txt
+
+    if [ -s archaea_acc.txt ]; then echo "DONE"; else rm -f archaea_acc.txt; fi
     """
 }
 // Bacteria
@@ -207,6 +209,8 @@ process retrieveAcc_bacteria {
     --retry_max ${params.retry_max} --retry_delay ${params.retry_delay} \
     --query "${params.rRNA16S_bact_search}" \
     --out bacteria_acc.txt
+
+    if [ -s bacteria_acc.txt ]; then echo "DONE";  else rm -f bacteria_acc.txt; fi
     """
 }
 
@@ -229,6 +233,8 @@ process retrieveAcc_types {
     --retry_max ${params.retry_max} --retry_delay ${params.retry_delay} \
     --query "${params.rRNA16S_type_search}" \
     --out types_acc.txt
+
+    if [ -s types_acc.txt ]; then echo "DONE"; else rm -f bacteria_acc.txt; fi
     """
 }
 
@@ -367,6 +373,8 @@ process get16SrRNA_feat {
     --email ${params.email} -db nucleotide -mode text -format ft -id ${acc_to_download_f} |
     ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue \
     -out new_16s_rrna_feat.${acc_to_download_f}.csv
+
+    if [ -s new_16s_rrna_feat.${acc_to_download_f}.csv ]; then echo "DONE"; else rm -f new_16s_rrna_feat.${acc_to_download_f}.csv; fi
     """
     else
     """
@@ -377,6 +385,8 @@ process get16SrRNA_feat {
     -format ft -id ${acc_to_download_f} |
     ftract -feature "rrna:product:16S ribosomal RNA" -min-length ${params.min_len} -on-error continue \
     -out new_16s_rrna_feat.${acc_to_download_f}.csv
+
+    if [ -s new_16s_rrna_feat.${acc_to_download_f}.csv ]; then echo "DONE"; else rm -f new_16s_rrna_feat.${acc_to_download_f}.csv; fi
     """   
 }
 
@@ -651,7 +661,7 @@ process downloadTaxdump {
 }
 
 process buildTaxtasticDB {
-    container = 'golob/ya16sdb:0.2C'
+    container = 'golob/taxtastic:0.9.0'
     label = 'io_limited'
     publishDir path: "${params.out}/", mode: "copy"
     errorStrategy 'finish'
@@ -792,7 +802,7 @@ process filterUnknownTaxa {
 // Step 7: Refresh the repo seqs!
 
 // A bit of fakery for debug
-if (args.debug) {
+if (params.debug) {
 process debug_records {
     container 'golob/ya16sdb:0.2C'
     label 'io_limited'
@@ -903,7 +913,7 @@ process refresh_verifyTaxIds {
 }
 
 process taxonomyTable_refresh {
-    container 'golob/ya16sdb:0.2C'
+    container 'golob/taxtastic:0.9.0'
     label 'io_mem'
     publishDir path: "${params.out}/", mode: "copy"
 
@@ -1120,13 +1130,23 @@ tax_group_changed_ch
     .set { 
         tax_group_changed_ch
     }
-tax_group_unchanged_ch
-    .filter { r -> r[1] == r[2]}
-    .map{ r -> r[1] }
-    .flatten()
-    .set { 
-        seqname_unchanged_ch
-    }
+if (params.debug) {
+    tax_group_unchanged_ch
+        .take (10)
+        .map{ r -> r[1] }
+        .flatten()
+        .set { 
+            seqname_unchanged_ch
+        }
+} else {
+    tax_group_unchanged_ch
+        .filter { r -> r[1] == r[2]}
+        .map{ r -> r[1] }
+        .flatten()
+        .set { 
+            seqname_unchanged_ch
+        }
+}
 
 // Of the changed, separate into 'rare' taxa (less than min reps for filtering) and non-rare
 tax_group_changed_ch
@@ -1178,7 +1198,7 @@ process taxonGroupFiles {
         file refresh_dd1200_named_seqs_f
     
     output:
-        set file('taxon_seqs.fasta'), file('taxon_seq_info.csv') into taxon_group_files_ch
+        set file('taxon_seqs.fasta'), file('taxon_seq_info.csv'), val(tax_id) into taxon_group_files_ch
 
 """
 #!/usr/bin/env python3
@@ -1211,11 +1231,11 @@ process filterOutliers {
     errorStrategy 'finish'
 
     input:
-        set file(seqs_f), file(seq_info_f) from taxon_group_files_ch
+        set file(seqs_f), file(seq_info_f), val(tax_id) from taxon_group_files_ch
         file refresh_dd1200_named_taxonomy_f
     
     output:
-        set file('outliers.csv'), file('unsorted.fasta'), file('deenurp.log') into filter_outliers_ch 
+        set file("outliers.${tax_id}.csv"), file("unsorted.${tax_id}.fasta"), file("deenurp.${tax_id}.log") into filter_outliers_ch 
     
     """
     set -e 
@@ -1229,20 +1249,68 @@ process filterOutliers {
     --max-distance 0.02 \
     --min-distance 0.01 \
     --min-seqs-for-filtering 5 \
-    --log deenurp.log \
-    --detailed-seqinfo outliers.csv \
-    --output-seqs unsorted.fasta \
+    --log deenurp.${tax_id}.log \
+    --detailed-seqinfo outliers.${tax_id}.csv \
+    --output-seqs unsorted.${tax_id}.fasta \
     ${seqs_f} ${seq_info_f} ${refresh_dd1200_named_taxonomy_f}
     """
 }
 
-// Make our new outliers.csv
+//
+// Make our new outliers.csv (which specifies of a seqname is or is not an outlier)
+//
+/*  We have a few different sources of outliers:
+*       - The _prior_ outliers from unchanged taxa
+*           -> refresh_outliers_unchanged_ch
+*       - The rare taxa (for which there are too few to use outliers)
+*           -> refresh_outliers_changed_rare_ch
+*       - The changed taxa (each an individual outlier file)
+*           -> filter_outliers_ch it[0]
+*
+*/
 
-// Use join to subset the prior outliers to the unchanged
-prior_outliers_ch.join(seqname_unchanged_ch)
+// Convert our unchanged seqids
+
+seqname_unchanged_ch
+    .unique()
+    .toList()
     .set{
-        refresh_outliers_unchanged_ch
+        refresh_unchanged_seqs_val
     }
+
+// Write this out as a CSV file:
+process writeCSV__priorOutliers {    
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
+
+    input:
+        val refresh_unchanged_seqs_val
+        file prior_outliers_f
+    output:
+        file("refresh_outliers_unchanged.csv") into refresh_outliers_unchanged_f
+
+"""
+#!/usr/bin/env python
+import csv
+
+
+unchanged_seq = {
+    s.strip() for s in 
+    "${refresh_unchanged_seqs_val.join(';')}".split(';')
+}
+
+with open("refresh_outliers_unchanged.csv", 'wt') as out_h, open("${prior_outliers_f}", 'rt') as in_h:
+    in_r = csv.reader(in_h)
+    header = next(in_r)
+    out_w = csv.writer(out_h)
+    out_w.writerow(header)
+    out_w.writerows((
+        r for r in in_r
+        if r[0].strip() in unchanged_seq
+    ))
+
+"""
+}
 
 // Rare changed set we let pass through as presumed valid
 seqname_changed_rare_ch
@@ -1257,56 +1325,99 @@ seqname_changed_rare_ch
         "", // x 
         "", // y
     ]}
+    .toList()
     .set {
-        refresh_outliers_changed_rare_ch
+        refresh_outliers_changed_rare_val
     }
 
-filter_outliers_ch
-    // read in each outliers.csv. Remove header. 
-    .flatMap { r -> 
-        lines = r[0].readLines();
-        lines.removeAt(0);
-        return lines;
-    }
-    .set {
-        refresh_outliers_changed_ch
-    }
+// Write this out as a CSV file
+process writeCSV__outlierRare {    
+    container = 'golob/medirect:0.14.0__bcw.0.3.1B'
+    label = 'io_limited'
 
+    input:
+        val refresh_outliers_changed_rare_val
+    output:
+        file("refresh_outliers_rare.csv") into refresh_outliers_rare_f
 
-refresh_outliers_unchanged_ch
-    .mix(
-        refresh_outliers_changed_rare_ch
-    )
-    .map { r -> 
-        r.join(',')
-    }
-    .mix(
-        refresh_outliers_changed_ch
-    )
-    .reduce(""){ p,c ->
-        p += (c+"\\n");
-        return p;
-    }
-    .set{
-        refresh_outlier_details_val
-    }
+"""
+#!/usr/bin/env python
+import csv
+
+record_str = "${refresh_outliers_changed_rare_val.join(';')}".split(';')
+
+if record_str == "":
+    records = []
+else:
+    records = [
+        [
+            c.strip() for c in 
+            s.replace('[', '').replace(']', '').split(',')
+        ]
+        for s in record_str
+    ]
+
+with open("refresh_outliers_rare.csv", 'wt') as out_h:
+    out_w = csv.writer(out_h)
+    out_w.writerow([
+        'seqname',
+        'tax_id',
+        'centroid',
+        'cluster',
+        'dist',
+        'is_out',
+        'species',
+        'x',
+        'y'
+    ])
+    out_w.writerows(records)
+
+"""
+}
+
+refresh_outliers_rare_f
+    .mix(refresh_outliers_unchanged_f)
+    .mix(filter_outliers_ch.map{ it[0]})
+    .toList()
+    .set { refreshed_outlier_f  }
 
 
 process makeRefreshedOutliers {
-    container 'golob/ya16sdb:0.2C'
+    container 'golob/medirect:0.14.0__bcw.0.3.1B'
     label 'io_limited'
     errorStrategy 'finish'
     publishDir path: "${params.out}/dedup/1200bp/named/filtered/", mode: 'copy'
 
     input:
-        val refresh_outlier_details_val
+        file "inputs/*" from refreshed_outlier_f
     output:
         file 'outliers.csv' into refresh_outliers_f
     
-    """
-    printf "seqname,tax_id,centroid,cluster,dist,is_out,species,x,y\\n" > outliers.csv
-    printf "${refresh_outlier_details_val}" >> outliers.csv
-    """
+"""
+#!/usr/bin/env python
+import csv
+import os
+
+files = os.listdir('inputs/')
+readers = [
+    csv.DictReader(open('inputs/'+fn, 'rt'))
+    for fn in files
+]
+headers = [
+    r.fieldnames
+    for r in readers
+]
+common_header = headers[0]
+for ch in headers[1:]:
+    common_header += [h for h in ch if h not in common_header]
+
+with open("outliers.csv", 'wt') as out_h:
+    out_w = csv.DictWriter(out_h, fieldnames=common_header)
+    out_w.writeheader()
+    for reader in readers:
+        out_w.writerows(reader)
+
+"""
 }
 
 // Integrate in the outlier information to the feather-seq-info
