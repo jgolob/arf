@@ -42,7 +42,7 @@
 */
 
 // containers
-container__arf = 'golob/arf:0.1'
+container__arf = 'golob/arf:0.1A'
 
 // User params initialization
 params.help = false

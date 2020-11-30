@@ -19,7 +19,7 @@ RUN pip3 install \
         awscli \
         boto3 \
         numpy \
-        biopython \
+        biopython==1.77 \
         Cython \
         taxtastic
 
