@@ -1,8 +1,8 @@
-# golob/ya16sdb:0.2C
+# golob/arf:0.1
 
 FROM      ubuntu:18.04
 
-env DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
 python3-dev \
 python3-pip \
@@ -14,29 +14,29 @@ git \
 && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 RUN pip3 install pip --upgrade
+
 RUN pip3 install \
-        awscli>=1.15.14 \
-        boto3>=1.7.14 \
-        numpy>=1.14.2 \
-        bucket_command_wrapper==0.3.1 \
-        biopython>=1.68 \
+        awscli \
+        boto3 \
+        numpy \
+        biopython \
         Cython \
         taxtastic
 
-RUN mkdir -p /fh && mkdir -p /app && mkdir -p /src
-RUN mkdir -p /mnt/inputs/file && mkdir -p /mnt/outputs/file && mkdir /scratch
+RUN mkdir -p /src
+
 RUN mkdir /logs && mkdir /records
 
 RUN cd /src && \
-wget https://github.com/torognes/vsearch/releases/download/v2.13.6/vsearch-2.13.6-linux-x86_64.tar.gz && \
-tar xzvf vsearch-2.13.6-linux-x86_64.tar.gz && \
-cp /src/vsearch-2.13.6-linux-x86_64/bin/vsearch /usr/local/bin/ && \
+wget https://github.com/torognes/vsearch/releases/download/v2.15.1/vsearch-2.15.1-linux-x86_64.tar.gz && \
+tar xzvf vsearch-2.15.1-linux-x86_64.tar.gz && \
+cp /src/vsearch-2.15.1-linux-x86_64/bin/vsearch /usr/local/bin/ && \
 rm -r /src/*
 
 RUN cd /src && \
-wget ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.9.0/ncbi-blast-2.9.0+-x64-linux.tar.gz && \
-tar xzvf ncbi-blast-2.9.0+-x64-linux.tar.gz && \
-cp  /src/ncbi-blast-2.9.0+/bin/makeblastdb /usr/local/bin && \
+wget ftp://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.11.0/ncbi-blast-2.11.0+-x64-linux.tar.gz && \
+tar xzvf ncbi-blast-2.11.0+-x64-linux.tar.gz && \
+cp  /src/ncbi-blast-2.11.0+/bin/makeblastdb /usr/local/bin && \
 rm -r /src/*
 
 ADD requirements.txt /src/

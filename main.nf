@@ -41,6 +41,8 @@
     13) Use git to version and commit the changes.
 */
 
+// containers
+container__arf = 'golob/arf:0.1'
 
 // User params initialization
 params.help = false
@@ -610,7 +612,7 @@ else:
 
 // Step 5: Align against RDP type strains with vsearch to validate
 process vsearch_rdp_validate {
-    container 'golob/ya16sdb:0.2C'
+    container  = "${container__arf}"
     label 'mem_veryhigh'
     cache 'deep'
     errorStrategy 'finish'
@@ -645,7 +647,7 @@ process vsearch_rdp_validate {
 
 // Step 6: Build taxonomy DB Check tax IDs in seq_info using taxtastic
 process downloadTaxdump {
-    container = 'golob/ya16sdb:0.2C'
+    container =  "${container__arf}"
     label = 'io_limited'
     errorStrategy 'finish'
     publishDir path: "${params.out}/", mode: "copy"
@@ -661,7 +663,7 @@ process downloadTaxdump {
 }
 
 process buildTaxtasticDB {
-    container = 'golob/taxtastic:0.9.0'
+    container =  "${container__arf}"
     label = 'io_limited'
     publishDir path: "${params.out}/", mode: "copy"
     errorStrategy 'finish'
@@ -779,7 +781,7 @@ with open("new_combined_seq_info.csv", 'wt') as out_h:
 }
 
 process filterUnknownTaxa {
-    container = 'golob/ya16sdb:0.2C'
+    container =  "${container__arf}"
     label = 'io_limited'
     errorStrategy 'finish'
 
