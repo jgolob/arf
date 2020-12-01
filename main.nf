@@ -43,6 +43,7 @@
 
 // containers
 container__arf = 'golob/arf:0.1A'
+container__deenurp = 'golob/deenurp:0.2.7'
 
 // User params initialization
 params.help = false
@@ -1228,7 +1229,7 @@ with open('taxon_seq_info.csv', 'wt') as taxon_si_h:
 
 // Run this channel through deenurp.
 process filterOutliers {
-    container 'golob/deenurp:0.2.6A'
+    container = "${container__deenurp}"
     label 'multithread'
     errorStrategy 'finish'
 
